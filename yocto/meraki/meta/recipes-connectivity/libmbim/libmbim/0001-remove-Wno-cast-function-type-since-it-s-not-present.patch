@@ -1,0 +1,28 @@
+From 7d071ad4b11bdaf9566446bd4efe7734a94d5c2b Mon Sep 17 00:00:00 2001
+From: Nathan Moos <moosnat@meraki.com>
+Date: Wed, 14 Oct 2020 10:40:04 -0700
+Subject: [PATCH] remove -Wno-cast-function-type since it's not present in
+ gcc-7
+
+---
+ configure.ac | 4 ----
+ 1 file changed, 4 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index 20da81e..8829214 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -54,10 +54,6 @@ m4_pattern_forbid([^AX_(COMPILER_FLAGS|COMPILER_FLAGS_(CFLAGS|GIR|LDFLAGS))\b],
+ dnl Detect git or release builds
+ AX_IS_RELEASE([git-directory])
+ 
+-dnl Function type cast disabled: used throughout the code especially to
+-dnl cast GAsyncReadyCallbacks with the real object type instead of GObject
+-DISABLED_WARNINGS="${DISABLED_WARNINGS} -Wno-cast-function-type"
+-
+ dnl All message protocol structs are packed, never complain about it
+ DISABLED_WARNINGS="${DISABLED_WARNINGS} -Wno-packed"
+ 
+-- 
+2.28.0
+

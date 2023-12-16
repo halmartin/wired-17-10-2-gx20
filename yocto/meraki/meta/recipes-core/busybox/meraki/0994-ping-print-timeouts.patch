@@ -1,0 +1,88 @@
+From 5ce5e6b943f1859624acba85e07d4b7ca701ff50 Mon Sep 17 00:00:00 2001
+From: jbicket <jbicket@meraki.com>
+Date: Mon, 4 Jul 2011 22:45:58 +0000
+Subject: [PATCH]     busybox ping: print timeouts if you specify the '-t'
+ option
+
+    This produces behavior similar to normal ping output when a request times out:
+    John-Bickets-MacBook-Air:~ jbicket$ ping cnn.com
+    PING cnn.com (157.166.226.25): 56 data bytes
+    Request timeout for icmp_seq 0
+    Request timeout for icmp_seq 1
+    ^C
+---
+ networking/ping.c | 17 +++++++++++++++--
+ 1 file changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/networking/ping.c b/networking/ping.c
+index 26b3989..513b8f6 100644
+--- a/networking/ping.c
++++ b/networking/ping.c
+@@ -82,6 +82,7 @@
+ //usage:     "\n	-w SEC		Seconds until ping exits (default:infinite)"
+ //usage:     "\n			(can exit earlier with -c CNT)"
+ //usage:     "\n	-q		Quiet, only display output at start/finish"
++//usage:     "\n	-T		Print timeouts"
+ //usage:     "\n	-p HEXBYTE	Payload pattern"
+ //usage:
+ //usage:# define ping6_trivial_usage
+@@ -398,7 +400,7 @@ static int common_ping_main(sa_family_t af, char **argv)
+ /* Full(er) version */
+ 
+ /* -c NUM, -t NUM, -w NUM, -W NUM */
+-#define OPT_STRING "qvAc:+s:t:+w:+W:+I:np:i:4"IF_PING6("6")
++#define OPT_STRING "qvAc:+s:t:+w:+W:+I:Tp:i:4"IF_PING6("6")
+ enum {
+ 	OPT_QUIET = 1 << 0,
+ 	OPT_VERBOSE = 1 << 1,
+@@ -409,7 +411,7 @@ enum {
+ 	OPT_w = 1 << 6,
+ 	OPT_W = 1 << 7,
+ 	OPT_I = 1 << 8,
+-	/*OPT_n = 1 << 9, - ignored */
++	OPT_T = 1 << 9,
+ 	OPT_p = 1 << 10,
+ 	OPT_i = 1 << 11,
+ 	OPT_IPV4 = 1 << 12,
+@@ -434,6 +436,8 @@ struct globals {
+ 	unsigned interval_us;
+ 	unsigned timeout;
+ 	unsigned sizeof_rcv_packet;
++	unsigned print_timeouts;
++	unsigned last_recv_seq;
+ 	char *rcv_packet; /* [datalen + MAXIPLEN + MAXICMPLEN] */
+ 	void *snd_packet; /* [datalen + ipv4/ipv6_const] */
+ 	const char *hostname;
+@@ -513,6 +517,11 @@ static void sendping_tail(void (*sp)(int), int size_pkt)
+ {
+ 	int sz;
+ 
++	if (G.print_timeouts && G.ntransmitted != 0 && G.last_recv_seq != G.ntransmitted - 1){
++		printf("Request timeout for icmp seq %u\n", (unsigned)(G.ntransmitted - 1));
++		fflush(stdout);
++	}
++
+ 	if (G.deadline_us) {
+ 		unsigned n = G.cur_us - G.deadline_us;
+ 		if ((int)n >= 0)
+@@ -677,6 +686,7 @@ static void unpack_tail(int sz, uint32_t *tp,
+ 		*b |= m;
+ 		++G.nreceived;
+ 		dupmsg += 7;
++		G.last_recv_seq = recv_seq;
+ 	}
+ 
+ 	if (option_mask32 & OPT_QUIET)
+@@ -973,6 +983,9 @@ static int common_ping_main(int opt, char **argv)
+ 		interval = INT_MAX/1000000;
+ 	G.interval_us = interval * 1000000;
+ 
++	if (opt & OPT_T)
++		G.print_timeouts = 1;
++
+ 	myid = (uint16_t) getpid();
+ 	/* we can use native-endian ident, but other Unix ping/traceroute
+ 	 * utils use *big-endian pid*, and e.g. traceroute on our machine may be
+-- 
+2.32.0
+

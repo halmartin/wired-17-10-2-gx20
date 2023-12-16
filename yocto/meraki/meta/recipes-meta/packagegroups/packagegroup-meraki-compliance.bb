@@ -1,0 +1,45 @@
+LICENSE = "GPLv2"
+require recipes-core/packagegroups/packagegroup-core-boot.bb
+RDEPENDS_${PN} = " \
+  bird \
+  busybox \
+  dbus \
+  dnsmasq \
+  ethtool \
+  glib-2.0 \
+  gnutls \
+  haveged \
+  hping3 \
+  i2c-tools \
+  iproute2 \
+  lasso \
+  libgcrypt \
+  libgudev \
+  libidn \
+  libmbim \
+  libqmi \
+  lxc \
+  memtester \
+  modemmanager \
+  mtd-utils \
+  mtd-openwrt \
+  mtr \
+  nettle \
+  nuttcp \
+  openl2tp \
+  libpam \
+  pam-ldap \
+  pam-radius \
+  pam-script \
+  pciutils \
+  ppp \
+  rsyslog \
+  strongswan \
+  ubus \
+  udev \
+  uidmapshift \
+  usb-modeswitch \
+  usbutils \
+  util-linux \
+  wireless-tools \
+  "

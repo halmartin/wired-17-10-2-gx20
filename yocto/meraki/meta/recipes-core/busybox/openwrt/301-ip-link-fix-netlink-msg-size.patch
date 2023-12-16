@@ -1,0 +1,28 @@
+From 1fb987e3b8b5d18bb484800c620b02fc307a0d62 Mon Sep 17 00:00:00 2001
+From: Steven Barth <cyrus@openwrt.org>
+Date: Wed, 9 Sep 2015 10:38:16 +0000
+Subject: [PATCH]     busybox: fix ip applet and netlink behavior
+
+    Signed-off-by: Steven Barth <steven@midlink.org>
+
+    SVN-Revision: 46833
+---
+ networking/libiproute/iplink.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/networking/libiproute/iplink.c b/networking/libiproute/iplink.c
+index 9c164a71d..1cedd9f8c 100644
+--- a/networking/libiproute/iplink.c
++++ b/networking/libiproute/iplink.c
+@@ -652,7 +652,7 @@ static int do_add_or_delete(char **argv,
+ 	}
+ 	xrtnl_open(&rth);
+ 	ll_init_map(&rth);
+-	if (type_str) {
++	if (type_str && rtm == RTM_NEWLINK) {
+ 		struct rtattr *linkinfo = NLMSG_TAIL(&req.n);
+ 
+ 		addattr_l(&req.n, sizeof(req), IFLA_LINKINFO, NULL, 0);
+-- 
+2.22.0
+

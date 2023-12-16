@@ -1,0 +1,18 @@
+diff --git a/sysdep/click/krt.c b/sysdep/click/krt.c
+index 258cf733..64ebcaae 100644
+--- a/sysdep/click/krt.c
++++ b/sysdep/click/krt.c
+@@ -246,8 +246,8 @@ write_route_to_click(const struct proto *p,
+ 
+     net *net = route_info->net;
+ #ifdef IPV6
+-    ip4_ntop(net->n.prefix, prefix_str);
+-    ip4_ntop(route_info->gateway, gateway_str);
++    ip6_ntop(net->n.prefix, prefix_str);
++    ip6_ntop(route_info->gateway, gateway_str);
+ #else
+     ip4_ntop(net->n.prefix, prefix_str);
+     ip4_ntop(route_info->gateway, gateway_str);
+-- 
+2.22.0
+

@@ -1,0 +1,15 @@
+diff --git a/sysdep/click/krt.c b/sysdep/click/krt.c
+index 64ebcaae..97c67b34 100644
+--- a/sysdep/click/krt.c
++++ b/sysdep/click/krt.c
+@@ -313,7 +313,6 @@ push_route_info_to_click(const struct proto *p, net *net, const rte *route,
+     route_info.ospf_src = ospf_src;
+ 
+     if (route_is_multipath(route)) {
+-        log(L_WARN "%s: Multiple paths available", p->name);
+         route_info.multipath = 1;
+         const struct mpnh *nexthop = route->attrs->nexthops;
+         if (!nexthop)
+-- 
+2.22.0
+

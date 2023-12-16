@@ -1,0 +1,25 @@
+From 0f3a3e1a47a6570fe950089114bd4457bb7c7b62 Mon Sep 17 00:00:00 2001
+From: Christian Brauner <christian.brauner@ubuntu.com>
+Date: Sun, 27 Jan 2019 23:02:49 +0100
+Subject: [PATCH] compiler: remove deprecated and unneeded header
+
+Signed-off-by: Christian Brauner <christian.brauner@ubuntu.com>
+---
+ src/lxc/compiler.h | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/src/lxc/compiler.h b/src/lxc/compiler.h
+index 7fd5ea131502..e8c291ce5763 100644
+--- a/src/lxc/compiler.h
++++ b/src/lxc/compiler.h
+@@ -23,7 +23,6 @@
+ #ifndef _GNU_SOURCE
+ #define _GNU_SOURCE 1
+ #endif
+-#include <sys/cdefs.h>
+ 
+ #include "config.h"
+ 
+-- 
+2.19.2
+

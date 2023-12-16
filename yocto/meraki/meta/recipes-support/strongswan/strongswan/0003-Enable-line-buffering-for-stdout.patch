@@ -1,0 +1,29 @@
+From 6e86fe6557d1b2d247f0342455fc0ba1d1ed7b10 Mon Sep 17 00:00:00 2001
+From: Jerry Xu <jerxu@meraki.com>
+Date: Fri, 14 Jan 2022 13:02:31 -0800
+Subject: [PATCH] Enable-line-buffering-for-stdout
+
+---
+ src/libcharon/bus/listeners/file_logger.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/libcharon/bus/listeners/file_logger.c b/src/libcharon/bus/listeners/file_logger.c
+index cc93956..54075c0 100644
+--- a/src/libcharon/bus/listeners/file_logger.c
++++ b/src/libcharon/bus/listeners/file_logger.c
+@@ -252,6 +252,12 @@ METHOD(file_logger_t, open_, void,
+ 	else if (streq(this->filename, "stdout"))
+ 	{
+ 		file = stdout;
++#ifdef HAVE_SETLINEBUF
++		if (flush_line)
++		{
++			setlinebuf(file);
++		}
++#endif /* HAVE_SETLINEBUF */
+ 	}
+ 	else
+ 	{
+-- 
+2.34.1
+

@@ -1,0 +1,65 @@
+diff --git a/sysdep/click/krt.c b/sysdep/click/krt.c
+index 654fdc40..258cf733 100644
+--- a/sysdep/click/krt.c
++++ b/sysdep/click/krt.c
+@@ -152,7 +152,7 @@ krt_capable(rte *e)
+ }
+ 
+ static int
+-rte_is_ospf(rte* e)
++rte_is_ospf(const rte* e)
+ {
+     return (e->attrs->source == RTS_OSPF ||
+             e->attrs->source == RTS_OSPF_IA ||
+@@ -161,13 +161,13 @@ rte_is_ospf(rte* e)
+ }
+ 
+ static void
+-krt_preconfig(struct protocol* p, struct config* c)
++krt_preconfig(struct protocol* p UNUSED, struct config* c UNUSED)
+ {
+     defined = false;
+ }
+ 
+ static int
+-krt_import_control(struct proto *p, rte **new, ea_list **attrs, struct linpool *pool)
++krt_import_control(struct proto *p, rte **new, ea_list **attrs UNUSED, struct linpool *pool UNUSED)
+ {
+   rte *e = *new;
+   struct krt_config* cf = (struct krt_config*)p->cf;
+@@ -294,9 +294,11 @@ write_route_to_click(const struct proto *p,
+  * Tells Click to either add or remove a route, depending on the 'action'.
+  * The route information is derived from the information contained in 'net'
+  * and 'route'.
++ *
++ * Does not assume ownership of 'net'.
+  */
+ static void
+-push_route_info_to_click(const struct proto *p, const net *net, const rte *route,
++push_route_info_to_click(const struct proto *p, net *net, const rte *route,
+         int action)
+ {
+     char ospf_src[16] = "0.0.0.0";
+@@ -330,8 +332,8 @@ push_route_info_to_click(const struct proto *p, const net *net, const rte *route
+ }
+ 
+ static void
+-krt_notify(struct proto *p, struct rtable *table, net *net,
+-       rte *new, rte *old, struct ea_list *eattrs)
++krt_notify(struct proto *p, struct rtable *table UNUSED, net *net,
++       rte *new, rte *old, struct ea_list *eattrs UNUSED)
+ {
+     struct krt_proto* kp = (struct krt_proto*)p;
+ 
+@@ -399,7 +401,7 @@ krt_init(struct proto_config *c)
+ }
+ 
+ static int
+-krt_start(struct proto *p)
++krt_start(struct proto *p UNUSED)
+ {
+     return PS_UP;
+ }
+-- 
+2.22.0
+

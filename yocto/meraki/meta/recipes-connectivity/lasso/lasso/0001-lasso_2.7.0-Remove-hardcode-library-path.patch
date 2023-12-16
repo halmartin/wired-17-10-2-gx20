@@ -1,0 +1,25 @@
+From 4dc120f56081671f5bc0903d9bb08b4be902c9a4 Mon Sep 17 00:00:00 2001
+From: Yushu Shi <yusshi@meraki.com>
+Date: Wed, 10 Nov 2021 16:20:31 -0800
+Subject: [PATCH] lasso_2.7.0: Remove hardcode library path
+
+---
+ configure.ac | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/configure.ac b/configure.ac
+index b527def..101dfab 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -835,7 +835,7 @@ AC_SUBST(LASSO_CORE_CFLAGS)
+ AC_SUBST(LASSO_CORE_LIBS)
+ 
+ LASSO_CFLAGS="$LASSO_CFLAGS"
+-LASSO_LIBS="-L${libdir} $Z_LIBS $LASSO_LIBS"
++LASSO_LIBS="$Z_LIBS $LASSO_LIBS"
+ AC_SUBST(LASSO_CFLAGS)
+ AC_SUBST(LASSO_LIBS)
+ 
+-- 
+2.33.1
+

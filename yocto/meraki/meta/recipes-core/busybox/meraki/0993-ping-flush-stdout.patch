@@ -1,0 +1,27 @@
+From 4977afe4244aab4b4da5c1b59fcfa5ce41da74e2 Mon Sep 17 00:00:00 2001
+From: jbicket <jbicket@meraki.com>
+Date: Mon, 4 Jul 2011 22:45:53 +0000
+Subject: [PATCH] busybox ping
+
+    busybox ping: flush stdout after doing name lookup, but before pings begin.
+    (i.e. after printing "PING 18.26.4.9 (18.26.4.9): 56 data bytes").
+
+---
+ networking/ping.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/networking/ping.c b/networking/ping.c
+index a47342fee..43ad4765d 100644
+--- a/networking/ping.c
++++ b/networking/ping.c
+@@ -742,6 +742,7 @@ static void ping4(len_and_sockaddr *lsa)
+ 	}
+ 
+ 	signal(SIGINT, print_stats_and_exit);
++	fflush(stdout);
+ 
+ 	/* start the ping's going ... */
+  send_ping:
+-- 
+2.22.0
+

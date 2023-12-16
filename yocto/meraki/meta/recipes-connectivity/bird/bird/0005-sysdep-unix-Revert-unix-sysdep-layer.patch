@@ -1,0 +1,2573 @@
+diff --git a/sysdep/unix/Modules b/sysdep/unix/Modules
+index 8aeed504..2c6514df 100644
+--- a/sysdep/unix/Modules
++++ b/sysdep/unix/Modules
+@@ -10,8 +10,3 @@ random.c
+ krt.c
+ krt.h
+ krt.Y
+-kif.c
+-kif.h
+-kif.Y
+-sysio.h
+-syspriv.h
+diff --git a/sysdep/unix/config.Y b/sysdep/unix/config.Y
+index 15a87f53..dc5804ed 100644
+--- a/sysdep/unix/config.Y
++++ b/sysdep/unix/config.Y
+@@ -15,6 +15,7 @@ CF_DECLS
+ 
+ CF_KEYWORDS(LOG, SYSLOG, ALL, DEBUG, TRACE, INFO, REMOTE, WARNING, ERROR, AUTH, FATAL, BUG, STDERR, SOFT)
+ CF_KEYWORDS(TIMEFORMAT, ISO, OLD, SHORT, LONG, BASE, NAME, CONFIRM, UNDO, CHECK, TIMEOUT)
++CF_KEYWORDS(DEBUG, LATENCY, LIMIT, WATCHDOG, WARNING, TIMEOUT)
+ 
+ %type <i> log_mask log_mask_list log_cat cfg_timeout
+ %type <g> log_file
+@@ -35,12 +36,12 @@ log_config: LOG log_file log_mask ';' {
+  ;
+ 
+ syslog_name:
+-   NAME TEXT { $$ = $2; }
++   NAME text { $$ = $2; }
+  | { $$ = bird_name; }
+  ;
+ 
+ log_file:
+-   TEXT {
++   text {
+      struct rfile *f = rf_open(new_config->pool, $1, "a");
+      if (!f) cf_error("Unable to open log file `%s': %m", $1);
+      $$ = rf_file(f);
+@@ -76,13 +77,14 @@ CF_ADDTO(conf, mrtdump_base)
+ 
+ mrtdump_base:
+    MRTDUMP PROTOCOLS mrtdump_mask ';' { new_config->proto_default_mrtdump = $3; }
+- | MRTDUMP TEXT ';' {
++ | MRTDUMP text ';' {
+      struct rfile *f = rf_open(new_config->pool, $2, "a");
+      if (!f) cf_error("Unable to open MRTDump file '%s': %m", $2);
+      new_config->mrtdump_file = rf_fileno(f);
+    }
+  ;
+ 
++
+ CF_ADDTO(conf, timeformat_base)
+ 
+ timeformat_which:
+@@ -104,6 +106,17 @@ timeformat_base:
+    TIMEFORMAT timeformat_spec ';'
+  ;
+ 
++
++CF_ADDTO(conf, debug_unix)
++
++debug_unix:
++   DEBUG LATENCY bool { new_config->latency_debug = $3; }
++ | DEBUG LATENCY LIMIT expr_us { new_config->latency_limit = $4; }
++ | WATCHDOG WARNING expr_us { new_config->watchdog_warning = $3; }
++ | WATCHDOG TIMEOUT expr_us { new_config->watchdog_timeout = ($3 + 999999) TO_S; }
++ ;
++
++
+ /* Unix specific commands */
+ 
+ CF_CLI_HELP(CONFIGURE, ..., [[Reload configuration]])
+@@ -130,12 +143,6 @@ CF_CLI(CONFIGURE CHECK, cfg_name, [\"<file>\"], [[Parse configuration and check
+ CF_CLI(DOWN,,, [[Shut the daemon down]])
+ { cmd_shutdown(); } ;
+ 
+-CF_CLI(SHOW SOCKPROXY STATS,,, [[Show libsockproxy stats]])
+-{ cmd_sockproxy_stats(); } ;
+-
+-CF_CLI(RESET SOCKPROXY STATS,,, [[Reset libsockproxy stats]])
+-{ cmd_sockproxy_reset_stats(); } ;
+-
+ cfg_name:
+    /* empty */ { $$ = NULL; }
+  | TEXT
+diff --git a/sysdep/unix/io.c b/sysdep/unix/io.c
+index cd68728d..a90ddffd 100644
+--- a/sysdep/unix/io.c
++++ b/sysdep/unix/io.c
+@@ -1,9 +1,8 @@
+ /*
+- *  BIRD Internet Routing Daemon -- Meraki Unix I/O
++ *	BIRD Internet Routing Daemon -- Unix I/O
+  *
+- *  (c) 1998--2004 Martin Mares <mj@ucw.cz>
++ *	(c) 1998--2004 Martin Mares <mj@ucw.cz>
+  *      (c) 2004       Ondrej Filip <feela@network.cz>
+- *      (c) 2014--2017 Cisco Systems, Inc.
+  *
+  *	Can be freely distributed and used under the terms of the GNU GPL.
+  */
+@@ -22,6 +21,7 @@
+ #include <sys/socket.h>
+ #include <sys/uio.h>
+ #include <sys/un.h>
++#include <poll.h>
+ #include <unistd.h>
+ #include <fcntl.h>
+ #include <errno.h>
+@@ -43,8 +43,6 @@
+ #include "lib/unix.h"
+ #include "lib/sysio.h"
+ 
+-int sk_priority_control = 7;
+-
+ /* Maximum number of calls of tx handler for one socket in one
+  * poll iteration. Should be small enough to not monopolize CPU by
+  * one protocol instance.
+@@ -116,6 +114,7 @@ rf_fileno(struct rfile *f)
+   return fileno(f->f);
+ }
+ 
++
+ /**
+  * DOC: Timers
+  *
+@@ -635,13 +634,13 @@ sk_setup_multicast6(sock *s)
+   int ttl = s->ttl;
+   int n = 0;
+ 
+-  if (CSP_setsockopt(s->fd, SOL_IPV6, IPV6_MULTICAST_IF, &index, sizeof(index)) < 0)
++  if (setsockopt(s->fd, SOL_IPV6, IPV6_MULTICAST_IF, &index, sizeof(index)) < 0)
+     ERR("IPV6_MULTICAST_IF");
+ 
+-  if (CSP_setsockopt(s->fd, SOL_IPV6, IPV6_MULTICAST_HOPS, &ttl, sizeof(ttl)) < 0)
++  if (setsockopt(s->fd, SOL_IPV6, IPV6_MULTICAST_HOPS, &ttl, sizeof(ttl)) < 0)
+     ERR("IPV6_MULTICAST_HOPS");
+ 
+-  if (CSP_setsockopt(s->fd, SOL_IPV6, IPV6_MULTICAST_LOOP, &n, sizeof(n)) < 0)
++  if (setsockopt(s->fd, SOL_IPV6, IPV6_MULTICAST_LOOP, &n, sizeof(n)) < 0)
+     ERR("IPV6_MULTICAST_LOOP");
+ 
+   return 0;
+@@ -652,7 +651,7 @@ sk_join_group6(sock *s, ip_addr maddr)
+ {
+   struct ipv6_mreq mr = INIT_MREQ6(maddr, s->iface);
+ 
+-  if (CSP_setsockopt(s->fd, SOL_IPV6, IPV6_JOIN_GROUP, &mr, sizeof(mr)) < 0)
++  if (setsockopt(s->fd, SOL_IPV6, IPV6_JOIN_GROUP, &mr, sizeof(mr)) < 0)
+     ERR("IPV6_JOIN_GROUP");
+ 
+   return 0;
+@@ -663,7 +662,7 @@ sk_leave_group6(sock *s, ip_addr maddr)
+ {
+   struct ipv6_mreq mr = INIT_MREQ6(maddr, s->iface);
+ 
+-  if (CSP_setsockopt(s->fd, SOL_IPV6, IPV6_LEAVE_GROUP, &mr, sizeof(mr)) < 0)
++  if (setsockopt(s->fd, SOL_IPV6, IPV6_LEAVE_GROUP, &mr, sizeof(mr)) < 0)
+     ERR("IPV6_LEAVE_GROUP");
+ 
+   return 0;
+@@ -701,7 +700,7 @@ sk_request_cmsg6_pktinfo(sock *s)
+ {
+   int y = 1;
+ 
+-  if (CSP_setsockopt(s->fd, SOL_IPV6, IPV6_RECVPKTINFO, &y, sizeof(y)) < 0)
++  if (setsockopt(s->fd, SOL_IPV6, IPV6_RECVPKTINFO, &y, sizeof(y)) < 0)
+     ERR("IPV6_RECVPKTINFO");
+ 
+   return 0;
+@@ -712,7 +711,7 @@ sk_request_cmsg6_ttl(sock *s)
+ {
+   int y = 1;
+ 
+-  if (CSP_setsockopt(s->fd, SOL_IPV6, IPV6_RECVHOPLIMIT, &y, sizeof(y)) < 0)
++  if (setsockopt(s->fd, SOL_IPV6, IPV6_RECVHOPLIMIT, &y, sizeof(y)) < 0)
+     ERR("IPV6_RECVHOPLIMIT");
+ 
+   return 0;
+@@ -767,7 +766,7 @@ sk_prepare_cmsgs6(sock *s, struct msghdr *msg, void *cbuf, size_t cbuflen)
+ static inline int
+ sk_set_ttl4(sock *s, int ttl)
+ {
+-  if (CSP_setsockopt(s->fd, SOL_IP, IP_TTL, &ttl, sizeof(ttl)) < 0)
++  if (setsockopt(s->fd, SOL_IP, IP_TTL, &ttl, sizeof(ttl)) < 0)
+     ERR("IP_TTL");
+ 
+   return 0;
+@@ -776,7 +775,7 @@ sk_set_ttl4(sock *s, int ttl)
+ static inline int
+ sk_set_ttl6(sock *s, int ttl)
+ {
+-  if (CSP_setsockopt(s->fd, SOL_IPV6, IPV6_UNICAST_HOPS, &ttl, sizeof(ttl)) < 0)
++  if (setsockopt(s->fd, SOL_IPV6, IPV6_UNICAST_HOPS, &ttl, sizeof(ttl)) < 0)
+     ERR("IPV6_UNICAST_HOPS");
+ 
+   return 0;
+@@ -785,7 +784,7 @@ sk_set_ttl6(sock *s, int ttl)
+ static inline int
+ sk_set_tos4(sock *s, int tos)
+ {
+-  if (CSP_setsockopt(s->fd, SOL_IP, IP_TOS, &tos, sizeof(tos)) < 0)
++  if (setsockopt(s->fd, SOL_IP, IP_TOS, &tos, sizeof(tos)) < 0)
+     ERR("IP_TOS");
+ 
+   return 0;
+@@ -794,7 +793,7 @@ sk_set_tos4(sock *s, int tos)
+ static inline int
+ sk_set_tos6(sock *s, int tos)
+ {
+-  if (CSP_setsockopt(s->fd, SOL_IPV6, IPV6_TCLASS, &tos, sizeof(tos)) < 0)
++  if (setsockopt(s->fd, SOL_IPV6, IPV6_TCLASS, &tos, sizeof(tos)) < 0)
+     ERR("IPV6_TCLASS");
+ 
+   return 0;
+@@ -809,7 +808,7 @@ sk_set_high_port(sock *s UNUSED)
+   if (sk_is_ipv4(s))
+   {
+     int range = IP_PORTRANGE_HIGH;
+-    if (CSP_setsockopt(s->fd, SOL_IP, IP_PORTRANGE, &range, sizeof(range)) < 0)
++    if (setsockopt(s->fd, SOL_IP, IP_PORTRANGE, &range, sizeof(range)) < 0)
+       ERR("IP_PORTRANGE");
+   }
+ #endif
+@@ -818,7 +817,7 @@ sk_set_high_port(sock *s UNUSED)
+   if (sk_is_ipv6(s))
+   {
+     int range = IPV6_PORTRANGE_HIGH;
+-    if (CSP_setsockopt(s->fd, SOL_IPV6, IPV6_PORTRANGE, &range, sizeof(range)) < 0)
++    if (setsockopt(s->fd, SOL_IPV6, IPV6_PORTRANGE, &range, sizeof(range)) < 0)
+       ERR("IPV6_PORTRANGE");
+   }
+ #endif
+@@ -931,7 +930,7 @@ sk_setup_broadcast(sock *s)
+ {
+   int y = 1;
+ 
+-  if (CSP_setsockopt(s->fd, SOL_SOCKET, SO_BROADCAST, &y, sizeof(y)) < 0)
++  if (setsockopt(s->fd, SOL_SOCKET, SO_BROADCAST, &y, sizeof(y)) < 0)
+     ERR("SO_BROADCAST");
+ 
+   return 0;
+@@ -979,6 +978,7 @@ sk_set_min_ttl(sock *s, int ttl)
+     return sk_set_min_ttl6(s, ttl);
+ }
+ 
++#if 0
+ /**
+  * sk_set_md5_auth - add / remove MD5 security association for given socket
+  * @s: socket
+@@ -1005,35 +1005,11 @@ sk_set_min_ttl(sock *s, int ttl)
+  *
+  * Result: 0 for success, -1 for an error.
+  */
+-int
+-sk_set_md5_auth(sock *s, ip_addr local UNUSED, ip_addr remote, struct iface *ifa, char *passwd, int setkey UNUSED)
+-{
+-  struct tcp_md5sig md5;
+-
+-  memset(&md5, 0, sizeof(md5));
+-  sockaddr_fill((sockaddr *) &md5.tcpm_addr, s->af, remote, ifa, 0);
+-
+-  if (passwd)
+-  {
+-    int len = strlen(passwd);
+-
+-    if (len > TCP_MD5SIG_MAXKEYLEN)
+-      ERR_MSG("The password for TCP MD5 Signature is too long");
+ 
+-    md5.tcpm_keylen = len;
+-    memcpy(&md5.tcpm_key, passwd, len);
+-  }
+-
+-  if (CSP_setsockopt(s->fd, SOL_TCP, TCP_MD5SIG, &md5, sizeof(md5)) < 0)
+-  {
+-    if (errno == ENOPROTOOPT)
+-      ERR_MSG("Kernel does not support TCP MD5 signatures");
+-    else
+-      ERR("TCP_MD5SIG");
+-  }
+-
+-  return 0;
+-}
++int
++sk_set_md5_auth(sock *s, ip_addr local, ip_addr remote, struct iface *ifa, char *passwd, int setkey)
++{ DUMMY; }
++#endif
+ 
+ /**
+  * sk_set_ipv6_checksum - specify IPv6 checksum offset for given socket
+@@ -1051,7 +1027,7 @@ sk_set_md5_auth(sock *s, ip_addr local UNUSED, ip_addr remote, struct iface *ifa
+ int
+ sk_set_ipv6_checksum(sock *s, int offset)
+ {
+-  if (CSP_setsockopt(s->fd, SOL_IPV6, IPV6_CHECKSUM, &offset, sizeof(offset)) < 0)
++  if (setsockopt(s->fd, SOL_IPV6, IPV6_CHECKSUM, &offset, sizeof(offset)) < 0)
+     ERR("IPV6_CHECKSUM");
+ 
+   return 0;
+@@ -1067,7 +1043,7 @@ sk_set_icmp6_filter(sock *s, int p1, int p2)
+   ICMP6_FILTER_SETPASS(p1, &f);
+   ICMP6_FILTER_SETPASS(p2, &f);
+ 
+-  if (CSP_setsockopt(s->fd, SOL_ICMPV6, ICMP6_FILTER, &f, sizeof(f)) < 0)
++  if (setsockopt(s->fd, SOL_ICMPV6, ICMP6_FILTER, &f, sizeof(f)) < 0)
+     ERR("ICMP6_FILTER");
+ 
+   return 0;
+@@ -1087,7 +1063,6 @@ sk_log_error(sock *s, const char *p)
+ static list sock_list;
+ static struct birdsock *current_sock;
+ static struct birdsock *stored_sock;
+-static int sock_recalc_fdsets_p;
+ 
+ static inline sock *
+ sk_next(sock *s)
+@@ -1132,7 +1107,7 @@ sk_free(resource *r)
+   sk_free_bufs(s);
+   if (s->fd >= 0)
+   {
+-    CSP_close(s->fd);
++    close(s->fd);
+ 
+     /* FIXME: we should call sk_stop() for SKF_THREAD sockets */
+     if (s->flags & SKF_THREAD)
+@@ -1143,7 +1118,6 @@ sk_free(resource *r)
+     if (s == stored_sock)
+       stored_sock = sk_next(s);
+     rem_node(&s->n);
+-    sock_recalc_fdsets_p = 1;
+   }
+ }
+ 
+@@ -1246,7 +1220,7 @@ sk_setup(sock *s)
+   int y = 1;
+   int fd = s->fd;
+ 
+-  if (CSP_fcntl_int(fd, F_SETFL, O_NONBLOCK) < 0)
++  if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0)
+     ERR("O_NONBLOCK");
+ 
+   if (!s->af)
+@@ -1260,7 +1234,7 @@ sk_setup(sock *s)
+   {
+     s->flags &= ~SKF_PKTINFO;
+     s->flags |= SKF_HDRINCL;
+-    if (CSP_setsockopt(fd, SOL_IP, IP_HDRINCL, &y, sizeof(y)) < 0)
++    if (setsockopt(fd, SOL_IP, IP_HDRINCL, &y, sizeof(y)) < 0)
+       ERR("IP_HDRINCL");
+   }
+ #endif
+@@ -1272,7 +1246,7 @@ sk_setup(sock *s)
+ #ifdef SO_BINDTODEVICE
+     struct ifreq ifr = {};
+     strcpy(ifr.ifr_name, s->vrf->name);
+-    if (CSP_setsockopt(s->fd, SOL_SOCKET, SO_BINDTODEVICE, &ifr, sizeof(ifr)) < 0)
++    if (setsockopt(s->fd, SOL_SOCKET, SO_BINDTODEVICE, &ifr, sizeof(ifr)) < 0)
+       ERR("SO_BINDTODEVICE");
+ #endif
+   }
+@@ -1282,12 +1256,12 @@ sk_setup(sock *s)
+ #ifdef SO_BINDTODEVICE
+     struct ifreq ifr = {};
+     strcpy(ifr.ifr_name, s->iface->name);
+-    if (CSP_setsockopt(s->fd, SOL_SOCKET, SO_BINDTODEVICE, &ifr, sizeof(ifr)) < 0)
++    if (setsockopt(s->fd, SOL_SOCKET, SO_BINDTODEVICE, &ifr, sizeof(ifr)) < 0)
+       ERR("SO_BINDTODEVICE");
+ #endif
+ 
+ #ifdef CONFIG_UNIX_DONTROUTE
+-    if (CSP_setsockopt(s->fd, SOL_SOCKET, SO_DONTROUTE, &y, sizeof(y)) < 0)
++    if (setsockopt(s->fd, SOL_SOCKET, SO_DONTROUTE, &y, sizeof(y)) < 0)
+       ERR("SO_DONTROUTE");
+ #endif
+   }
+@@ -1318,7 +1292,7 @@ sk_setup(sock *s)
+   if (sk_is_ipv6(s))
+   {
+     if (s->flags & SKF_V6ONLY)
+-      if (CSP_setsockopt(fd, SOL_IPV6, IPV6_V6ONLY, &y, sizeof(y)) < 0)
++      if (setsockopt(fd, SOL_IPV6, IPV6_V6ONLY, &y, sizeof(y)) < 0)
+ 	ERR("IPV6_V6ONLY");
+ 
+     if (s->flags & SKF_LADDR_RX)
+@@ -1354,7 +1328,6 @@ static void
+ sk_insert(sock *s)
+ {
+   add_tail(&sock_list, &s->n);
+-  sock_recalc_fdsets_p = 1;
+ }
+ 
+ static void
+@@ -1363,7 +1336,7 @@ sk_tcp_connected(sock *s)
+   sockaddr sa;
+   int sa_len = sizeof(sa);
+ 
+-  if ((CSP_getsockname(s->fd, &sa.sa, &sa_len) < 0) ||
++  if ((getsockname(s->fd, &sa.sa, &sa_len) < 0) ||
+       (sockaddr_read(&sa, s->af, &s->saddr, &s->iface, &s->sport) < 0))
+     log(L_WARN "SOCK: Cannot get local IP address for TCP>");
+ 
+@@ -1398,7 +1371,7 @@ sk_passive_connected(sock *s, int type)
+ 
+   if (type == SK_TCP)
+   {
+-    if ((CSP_getsockname(fd, &loc_sa.sa, &loc_sa_len) < 0) ||
++    if ((getsockname(fd, &loc_sa.sa, &loc_sa_len) < 0) ||
+ 	(sockaddr_read(&loc_sa, s->af, &t->saddr, &t->iface, &t->sport) < 0))
+       log(L_WARN "SOCK: Cannot get local IP address for TCP<");
+ 
+@@ -1412,7 +1385,7 @@ sk_passive_connected(sock *s, int type)
+     log(L_ERR "SOCK: Incoming connection: %s%#m", t->err);
+ 
+     /* FIXME: handle it better in rfree() */
+-    CSP_close(t->fd);
++    close(t->fd);
+     t->fd = -1;
+     rfree(t);
+     return 1;
+@@ -1450,21 +1423,21 @@ sk_open(sock *s)
+     s->ttx = "";			/* Force s->ttx != s->tpos */
+     /* Fall thru */
+   case SK_TCP_PASSIVE:
+-    fd = CSP_socket(af, SOCK_STREAM, IPPROTO_TCP);
++    fd = socket(af, SOCK_STREAM, IPPROTO_TCP);
+     bind_port = s->sport;
+     bind_addr = s->saddr;
+     do_bind = bind_port || ipa_nonzero(bind_addr);
+     break;
+ 
+   case SK_UDP:
+-    fd = CSP_socket(af, SOCK_DGRAM, IPPROTO_UDP);
++    fd = socket(af, SOCK_DGRAM, IPPROTO_UDP);
+     bind_port = s->sport;
+     bind_addr = (s->flags & SKF_BIND) ? s->saddr : IPA_NONE;
+     do_bind = 1;
+     break;
+ 
+   case SK_IP:
+-    fd = CSP_socket(af, SOCK_RAW, s->dport);
++    fd = socket(af, SOCK_RAW, s->dport);
+     bind_port = 0;
+     bind_addr = (s->flags & SKF_BIND) ? s->saddr : IPA_NONE;
+     do_bind = ipa_nonzero(bind_addr);
+@@ -1494,14 +1467,14 @@ sk_open(sock *s)
+     {
+       int y = 1;
+ 
+-      if (CSP_setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &y, sizeof(y)) < 0)
++      if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &y, sizeof(y)) < 0)
+ 	ERR2("SO_REUSEADDR");
+ 
+ #ifdef CONFIG_NO_IFACE_BIND
+       /* Workaround missing ability to bind to an iface */
+       if ((s->type == SK_UDP) && s->iface && ipa_zero(bind_addr))
+       {
+-	if (CSP_setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &y, sizeof(y)) < 0)
++	if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &y, sizeof(y)) < 0)
+ 	  ERR2("SO_REUSEPORT");
+       }
+ #endif
+@@ -1512,7 +1485,7 @@ sk_open(sock *s)
+ 	  log(L_WARN "Socket error: %s%#m", s->err);
+ 
+     sockaddr_fill(&sa, af, bind_addr, s->iface, bind_port);
+-    if (CSP_bind(fd, &sa.sa, SA_LEN(sa)) < 0)
++    if (bind(fd, &sa.sa, SA_LEN(sa)) < 0)
+       ERR2("bind");
+   }
+ 
+@@ -1548,7 +1521,7 @@ sk_open(sock *s)
+   return 0;
+ 
+ err:
+-  CSP_close(fd);
++  close(fd);
+   s->fd = -1;
+   return -1;
+ }
+@@ -1662,7 +1635,7 @@ sk_sendmsg(sock *s)
+   if (s->flags & SKF_PKTINFO)
+     sk_prepare_cmsgs(s, &msg, cmsg_buf, sizeof(cmsg_buf));
+ 
+-  return CSP_sendmsg(s->fd, &msg, flags);
++  return sendmsg(s->fd, &msg, flags);
+ }
+ 
+ static inline int
+@@ -1682,7 +1655,7 @@ sk_recvmsg(sock *s)
+     .msg_flags = 0
+   };
+ 
+-  int rv = CSP_recvmsg(s->fd, &msg, 0);
++  int rv = recvmsg(s->fd, &msg, 0);
+   if (rv < 0)
+     return rv;
+ 
+@@ -1717,7 +1690,7 @@ sk_maybe_write(sock *s)
+   case SK_UNIX:
+     while (s->ttx != s->tpos)
+     {
+-      e = CSP_write(s->fd, s->ttx, s->tpos - s->ttx);
++      e = write(s->fd, s->ttx, s->tpos - s->ttx);
+ 
+       if (e < 0)
+       {
+@@ -1767,25 +1740,19 @@ sk_maybe_write(sock *s)
+ int
+ sk_rx_ready(sock *s)
+ {
+-  fd_set rd, wr;
+-  struct timeval timo;
+   int rv;
+-
+-  FD_ZERO(&rd);
+-  FD_ZERO(&wr);
+-  FD_SET(s->fd, &rd);
+-
+-  timo.tv_sec = 0;
+-  timo.tv_usec = 0;
++  struct pollfd pfd = { .fd = s->fd };
++  pfd.events |= POLLIN;
+ 
+  redo:
+-  rv = CSP_select(s->fd+1, &rd, &wr, NULL, &timo);
++  rv = poll(&pfd, 1, 0);
+ 
+   if ((rv < 0) && (errno == EINTR || errno == EAGAIN))
+     goto redo;
+ 
+   return rv;
+ }
++
+ /**
+  * sk_send - send data to a socket
+  * @s: socket
+@@ -1847,7 +1814,7 @@ sk_send_full(sock *s, unsigned len, struct iface *ifa,
+  /* sk_read() and sk_write() are called from BFD's event loop */
+ 
+ int
+-sk_read(sock *s, int revents UNUSED)
++sk_read(sock *s, int revents)
+ {
+   switch (s->type)
+   {
+@@ -1860,12 +1827,17 @@ sk_read(sock *s, int revents UNUSED)
+   case SK_TCP:
+   case SK_UNIX:
+     {
+-      int c = CSP_read(s->fd, s->rpos, s->rbuf + s->rbsize - s->rpos);
++      int c = read(s->fd, s->rpos, s->rbuf + s->rbsize - s->rpos);
+ 
+       if (c < 0)
+       {
+ 	if (errno != EINTR && errno != EAGAIN)
+ 	  s->err_hook(s, errno);
++	else if (errno == EAGAIN && !(revents & POLLIN))
++	{
++	  log(L_ERR "Got EAGAIN from read when revents=%x (without POLLIN)", revents);
++	  s->err_hook(s, 0);
++	}
+       }
+       else if (!c)
+ 	s->err_hook(s, 0);
+@@ -1932,6 +1904,20 @@ sk_write(sock *s)
+   }
+ }
+ 
++void
++sk_err(sock *s, int revents)
++{
++  int se = 0, sse = sizeof(se);
++  if ((s->type != SK_MAGIC) && (revents & POLLERR))
++    if (getsockopt(s->fd, SOL_SOCKET, SO_ERROR, &se, &sse) < 0)
++    {
++      log(L_ERR "IO: Socket error: SO_ERROR: %m");
++      se = 0;
++    }
++
++  s->err_hook(s, se);
++}
++
+ void
+ sk_dump_all(void)
+ {
+@@ -2133,62 +2119,63 @@ static int short_loops = 0;
+ void
+ io_loop(void)
+ {
+-
+-  fd_set rd, wr;
+-  struct timeval timo;
++  int poll_tout;
+   time_t tout;
+-  int hi, events;
++  int nfds, events, pout;
+   sock *s;
+   node *n;
++  int fdmax = 256;
++  struct pollfd *pfd = xmalloc(fdmax * sizeof(struct pollfd));
+ 
+-  sock_recalc_fdsets_p = 1;
+   watchdog_start1();
+   for(;;)
+     {
+       events = ev_run_list(&global_event_list);
++    timers:
+       update_times();
+       tout = tm_first_shot();
+       if (tout <= now)
+ 	{
+ 	  tm_shot();
+-	  continue;
++	  goto timers;
+ 	}
+-      timo.tv_sec = events ? 0 : MIN(tout - now, 3);
+-      timo.tv_usec = 0;
+-      io_close_event();
++      poll_tout = (events ? 0 : MIN(tout - now, 3)) * 1000; /* Time in milliseconds */
+ 
+-      if (sock_recalc_fdsets_p)
+-      {
+-          sock_recalc_fdsets_p = 0;
+-          FD_ZERO(&rd);
+-          FD_ZERO(&wr);
+-      }
++      io_close_event();
+ 
+-      hi = 0;
++      nfds = 0;
+       WALK_LIST(n, sock_list)
+ 	{
++	  pfd[nfds] = (struct pollfd) { .fd = -1 }; /* everything other set to 0 by this */
+ 	  s = SKIP_BACK(sock, n, n);
+ 	  if (s->rx_hook)
+ 	    {
+-	      FD_SET(s->fd, &rd);
+-	      if (s->fd > hi)
+-	          hi = s->fd;
++	      pfd[nfds].fd = s->fd;
++	      pfd[nfds].events |= POLLIN;
+ 	    }
+-	  else
+-	      FD_CLR(s->fd, &rd);
+ 	  if (s->tx_hook && s->ttx != s->tpos)
+ 	    {
+-          FD_SET(s->fd, &wr);
+-          if (s->fd > hi)
+-              hi = s->fd;
++	      pfd[nfds].fd = s->fd;
++	      pfd[nfds].events |= POLLOUT;
++	    }
++	  if (pfd[nfds].fd != -1)
++	    {
++	      s->index = nfds;
++	      nfds++;
+ 	    }
+ 	  else
+-	    FD_CLR(s->fd, &wr);
++	    s->index = -1;
++
++	  if (nfds >= fdmax)
++	    {
++	      fdmax *= 2;
++	      pfd = xrealloc(pfd, fdmax * sizeof(struct pollfd));
++	    }
+ 	}
+ 
+       /*
+        * Yes, this is racy. But even if the signal comes before this test
+-       * and entering select(), it gets caught on the next timer tick.
++       * and entering poll(), it gets caught on the next timer tick.
+        */
+ 
+       if (async_config_flag)
+@@ -2213,18 +2200,18 @@ io_loop(void)
+ 	  continue;
+ 	}
+ 
+-      /* And finally enter select() to find active sockets */
++      /* And finally enter poll() to find active sockets */
+       watchdog_stop();
+-      hi = CSP_select(hi+1, &rd, &wr, NULL, &timo);
++      pout = poll(pfd, nfds, poll_tout);
+       watchdog_start();
+ 
+-      if (hi < 0)
++      if (pout < 0)
+ 	{
+ 	  if (errno == EINTR || errno == EAGAIN)
+ 	    continue;
+-	  die("select: %m");
++	  die("poll: %m");
+ 	}
+-      if (hi)
++      if (pout)
+ 	{
+ 	  /* guaranteed to be non-empty */
+ 	  current_sock = SKIP_BACK(sock, n, HEAD(sock_list));
+@@ -2232,24 +2219,29 @@ io_loop(void)
+ 	  while (current_sock)
+ 	    {
+ 	      sock *s = current_sock;
++	      if (s->index == -1)
++		{
++		  current_sock = sk_next(s);
++		  goto next;
++		}
++
+ 	      int e;
+ 	      int steps;
+ 
+ 	      steps = MAX_STEPS;
+-
+-	      if ((s->type >= SK_MAGIC) && FD_ISSET(s->fd, &rd) && s->rx_hook)
++	      if (s->fast_rx && (pfd[s->index].revents & POLLIN) && s->rx_hook)
+ 		do
+ 		  {
+ 		    steps--;
+ 		    io_log_event(s->rx_hook, s->data);
+-		    e = sk_read(s, 0);
++		    e = sk_read(s, pfd[s->index].revents);
+ 		    if (s != current_sock)
+ 		      goto next;
+ 		  }
+ 		while (e && s->rx_hook && steps);
+ 
+ 	      steps = MAX_STEPS;
+-	      if (FD_ISSET(s->fd, &wr))
++	      if (pfd[s->index].revents & POLLOUT)
+ 		do
+ 		  {
+ 		    steps--;
+@@ -2259,6 +2251,7 @@ io_loop(void)
+ 		      goto next;
+ 		  }
+ 		while (e && steps);
++
+ 	      current_sock = sk_next(s);
+ 	    next: ;
+ 	    }
+@@ -2276,12 +2269,24 @@ io_loop(void)
+ 	  while (current_sock && count < MAX_RX_STEPS)
+ 	    {
+ 	      sock *s = current_sock;
++	      if (s->index == -1)
++		{
++		  current_sock = sk_next(s);
++		  goto next2;
++		}
+ 
+-	      if ((s->type < SK_MAGIC) && FD_ISSET(s->fd, &rd) && s->rx_hook)
++	      if (!s->fast_rx && (pfd[s->index].revents & POLLIN) && s->rx_hook)
+ 		{
+ 		  count++;
+ 		  io_log_event(s->rx_hook, s->data);
+-		  sk_read(s, 0);
++		  sk_read(s, pfd[s->index].revents);
++		  if (s != current_sock)
++		    goto next2;
++		}
++
++	      if (pfd[s->index].revents & (POLLHUP | POLLERR))
++		{
++		  sk_err(s, pfd[s->index].revents);
+ 		  if (s != current_sock)
+ 		    goto next2;
+ 		}
+@@ -2290,6 +2295,7 @@ io_loop(void)
+ 	    next2: ;
+ 	    }
+ 
++
+ 	  stored_sock = current_sock;
+ 	}
+     }
+diff --git a/sysdep/unix/krt.Y b/sysdep/unix/krt.Y
+new file mode 100644
+index 00000000..6fe39fa9
+--- /dev/null
++++ b/sysdep/unix/krt.Y
+@@ -0,0 +1,96 @@
++/*
++ *	BIRD -- UNIX Kernel Syncer Configuration
++ *
++ *	(c) 1998--2000 Martin Mares <mj@ucw.cz>
++ *
++ *	Can be freely distributed and used under the terms of the GNU GPL.
++ */
++
++CF_HDR
++
++#include "lib/krt.h"
++
++CF_DEFINES
++
++#define THIS_KRT ((struct krt_config *) this_proto)
++#define THIS_KIF ((struct kif_config *) this_proto)
++
++CF_DECLS
++
++CF_KEYWORDS(KERNEL, PERSIST, SCAN, TIME, LEARN, DEVICE, ROUTES, GRACEFUL, RESTART, KRT_SOURCE, KRT_METRIC, MERGE, PATHS)
++
++%type <i> kern_mp_limit
++
++CF_GRAMMAR
++
++/* Kernel syncer protocol */
++
++CF_ADDTO(proto, kern_proto '}')
++
++kern_proto_start: proto_start KERNEL { this_proto = krt_init_config($1); }
++ ;
++
++CF_ADDTO(kern_proto, kern_proto_start proto_name '{')
++CF_ADDTO(kern_proto, kern_proto proto_item ';')
++CF_ADDTO(kern_proto, kern_proto kern_item ';')
++
++kern_mp_limit:
++   /* empty */ { $$ = KRT_DEFAULT_ECMP_LIMIT; }
++ | LIMIT expr  { $$ = $2; if (($2 <= 0) || ($2 > 255)) cf_error("Merge paths limit must be in range 1-255"); }
++ ;
++
++kern_item:
++   PERSIST bool { THIS_KRT->persist = $2; }
++ | SCAN TIME expr {
++      /* Scan time of 0 means scan on startup only */
++      THIS_KRT->scan_time = $3;
++   }
++ | LEARN bool {
++      THIS_KRT->learn = $2;
++#ifndef KRT_ALLOW_LEARN
++      if ($2)
++	cf_error("Learning of kernel routes not supported on this platform");
++#endif
++   }
++ | DEVICE ROUTES bool { THIS_KRT->devroutes = $3; }
++ | GRACEFUL RESTART bool { THIS_KRT->graceful_restart = $3; }
++ | MERGE PATHS bool kern_mp_limit {
++      THIS_KRT->merge_paths = $3 ? $4 : 0;
++#ifndef KRT_ALLOW_MERGE_PATHS
++      if ($3)
++	cf_error("Path merging not supported on this platform");
++#endif
++   }
++ ;
++
++/* Kernel interface protocol */
++
++CF_ADDTO(proto, kif_proto '}')
++
++kif_proto_start: proto_start DEVICE { this_proto = kif_init_config($1); }
++ ;
++
++CF_ADDTO(kif_proto, kif_proto_start proto_name '{')
++CF_ADDTO(kif_proto, kif_proto proto_item ';')
++CF_ADDTO(kif_proto, kif_proto kif_item ';')
++
++kif_item:
++   SCAN TIME expr {
++      /* Scan time of 0 means scan on startup only */
++      THIS_KIF->scan_time = $3;
++   }
++ | PRIMARY text_or_none prefix_or_ipa {
++     struct kif_primary_item *kpi = cfg_alloc(sizeof (struct kif_primary_item));
++     kpi->pattern = $2;
++     kpi->prefix = $3.addr;
++     kpi->pxlen = $3.len;
++     add_tail(&THIS_KIF->primary, &kpi->n);
++   }
++ ;
++
++CF_ADDTO(dynamic_attr, KRT_SOURCE { $$ = f_new_dynamic_attr(EAF_TYPE_INT | EAF_TEMP, T_INT, EA_KRT_SOURCE); })
++CF_ADDTO(dynamic_attr, KRT_METRIC { $$ = f_new_dynamic_attr(EAF_TYPE_INT | EAF_TEMP, T_INT, EA_KRT_METRIC); })
++
++CF_CODE
++
++CF_END
+diff --git a/sysdep/unix/krt.c b/sysdep/unix/krt.c
+new file mode 100644
+index 00000000..526c0cab
+--- /dev/null
++++ b/sysdep/unix/krt.c
+@@ -0,0 +1,1281 @@
++/*
++ *	BIRD -- UNIX Kernel Synchronization
++ *
++ *	(c) 1998--2000 Martin Mares <mj@ucw.cz>
++ *
++ *	Can be freely distributed and used under the terms of the GNU GPL.
++ */
++
++/**
++ * DOC: Kernel synchronization
++ *
++ * This system dependent module implements the Kernel and Device protocol,
++ * that is synchronization of interface lists and routing tables with the
++ * OS kernel.
++ *
++ * The whole kernel synchronization is a bit messy and touches some internals
++ * of the routing table engine, because routing table maintenance is a typical
++ * example of the proverbial compatibility between different Unices and we want
++ * to keep the overhead of our KRT business as low as possible and avoid maintaining
++ * a local routing table copy.
++ *
++ * The kernel syncer can work in three different modes (according to system config header):
++ * Either with a single routing table and single KRT protocol [traditional UNIX]
++ * or with many routing tables and separate KRT protocols for all of them
++ * or with many routing tables, but every scan including all tables, so we start
++ * separate KRT protocols which cooperate with each other [Linux].
++ * In this case, we keep only a single scan timer.
++ *
++ * We use FIB node flags in the routing table to keep track of route
++ * synchronization status. We also attach temporary &rte's to the routing table,
++ * but it cannot do any harm to the rest of BIRD since table synchronization is
++ * an atomic process.
++ *
++ * When starting up, we cheat by looking if there is another
++ * KRT instance to be initialized later and performing table scan
++ * only once for all the instances.
++ *
++ * The code uses OS-dependent parts for kernel updates and scans. These parts are
++ * in more specific sysdep directories (e.g. sysdep/linux) in functions krt_sys_*
++ * and kif_sys_* (and some others like krt_replace_rte()) and krt-sys.h header file.
++ * This is also used for platform specific protocol options and route attributes.
++ *
++ * There was also an old code that used traditional UNIX ioctls for these tasks.
++ * It was unmaintained and later removed. For reference, see sysdep/krt-* files
++ * in commit 396dfa9042305f62da1f56589c4b98fac57fc2f6
++ */
++
++/*
++ *  If you are brave enough, continue now.  You cannot say you haven't been warned.
++ */
++
++#undef LOCAL_DEBUG
++
++#include "nest/bird.h"
++#include "nest/iface.h"
++#include "nest/route.h"
++#include "nest/protocol.h"
++#include "filter/filter.h"
++#include "lib/timer.h"
++#include "conf/conf.h"
++#include "lib/string.h"
++
++#include "unix.h"
++#include "krt.h"
++
++/*
++ *	Global resources
++ */
++
++pool *krt_pool;
++static linpool *krt_filter_lp;
++static list krt_proto_list;
++
++void
++krt_io_init(void)
++{
++  krt_pool = rp_new(&root_pool, "Kernel Syncer");
++  krt_filter_lp = lp_new(krt_pool, 4080);
++  init_list(&krt_proto_list);
++  krt_sys_io_init();
++}
++
++/*
++ *	Interfaces
++ */
++
++struct kif_proto *kif_proto;
++static struct kif_config *kif_cf;
++static timer *kif_scan_timer;
++static bird_clock_t kif_last_shot;
++
++static void
++kif_scan(timer *t)
++{
++  struct kif_proto *p = t->data;
++
++  KRT_TRACE(p, D_EVENTS, "Scanning interfaces");
++  kif_last_shot = now;
++  kif_do_scan(p);
++}
++
++static void
++kif_force_scan(void)
++{
++  if (kif_proto && kif_last_shot + 2 < now)
++    {
++      kif_scan(kif_scan_timer);
++      tm_start(kif_scan_timer, ((struct kif_config *) kif_proto->p.cf)->scan_time);
++    }
++}
++
++void
++kif_request_scan(void)
++{
++  if (kif_proto && kif_scan_timer->expires > now)
++    tm_start(kif_scan_timer, 1);
++}
++
++static inline int
++prefer_addr(struct ifa *a, struct ifa *b)
++{
++  int sa = a->scope > SCOPE_LINK;
++  int sb = b->scope > SCOPE_LINK;
++
++  if (sa < sb)
++    return 0;
++  else if (sa > sb)
++    return 1;
++  else
++    return ipa_compare(a->ip, b->ip) < 0;
++}
++
++static inline struct ifa *
++find_preferred_ifa(struct iface *i, ip_addr prefix, ip_addr mask)
++{
++  struct ifa *a, *b = NULL;
++
++  WALK_LIST(a, i->addrs)
++    {
++      if (!(a->flags & IA_SECONDARY) &&
++	  ipa_equal(ipa_and(a->ip, mask), prefix) &&
++	  (!b || prefer_addr(a, b)))
++	b = a;
++    }
++
++  return b;
++}
++
++struct ifa *
++kif_choose_primary(struct iface *i)
++{
++  struct kif_config *cf = (struct kif_config *) (kif_proto->p.cf);
++  struct kif_primary_item *it;
++  struct ifa *a;
++
++  WALK_LIST(it, cf->primary)
++    {
++      if (!it->pattern || patmatch(it->pattern, i->name))
++	if (a = find_preferred_ifa(i, it->prefix, ipa_mkmask(it->pxlen)))
++	  return a;
++    }
++
++  if (a = kif_get_primary_ip(i))
++    return a;
++
++  return find_preferred_ifa(i, IPA_NONE, IPA_NONE);
++}
++
++
++static struct proto *
++kif_init(struct proto_config *c)
++{
++  struct kif_proto *p = proto_new(c, sizeof(struct kif_proto));
++
++  kif_sys_init(p);
++  return &p->p;
++}
++
++static int
++kif_start(struct proto *P)
++{
++  struct kif_proto *p = (struct kif_proto *) P;
++
++  kif_proto = p;
++  kif_sys_start(p);
++
++  /* Start periodic interface scanning */
++  kif_scan_timer = tm_new(P->pool);
++  kif_scan_timer->hook = kif_scan;
++  kif_scan_timer->data = p;
++  kif_scan_timer->recurrent = KIF_CF->scan_time;
++  kif_scan(kif_scan_timer);
++  tm_start(kif_scan_timer, KIF_CF->scan_time);
++
++  return PS_UP;
++}
++
++static int
++kif_shutdown(struct proto *P)
++{
++  struct kif_proto *p = (struct kif_proto *) P;
++
++  tm_stop(kif_scan_timer);
++  kif_sys_shutdown(p);
++  kif_proto = NULL;
++
++  return PS_DOWN;
++}
++
++static int
++kif_reconfigure(struct proto *p, struct proto_config *new)
++{
++  struct kif_config *o = (struct kif_config *) p->cf;
++  struct kif_config *n = (struct kif_config *) new;
++
++  if (!kif_sys_reconfigure((struct kif_proto *) p, n, o))
++    return 0;
++
++  if (o->scan_time != n->scan_time)
++    {
++      tm_stop(kif_scan_timer);
++      kif_scan_timer->recurrent = n->scan_time;
++      kif_scan(kif_scan_timer);
++      tm_start(kif_scan_timer, n->scan_time);
++    }
++
++  if (!EMPTY_LIST(o->primary) || !EMPTY_LIST(n->primary))
++    {
++      /* This is hack, we have to update a configuration
++       * to the new value just now, because it is used
++       * for recalculation of primary addresses.
++       */
++      p->cf = new;
++
++      ifa_recalc_all_primary_addresses();
++    }
++
++  return 1;
++}
++
++
++static void
++kif_preconfig(struct protocol *P UNUSED, struct config *c)
++{
++  kif_cf = NULL;
++  kif_sys_preconfig(c);
++}
++
++struct proto_config *
++kif_init_config(int class)
++{
++  if (kif_cf)
++    cf_error("Kernel device protocol already defined");
++
++  kif_cf = (struct kif_config *) proto_config_new(&proto_unix_iface, class);
++  kif_cf->scan_time = 60;
++  init_list(&kif_cf->primary);
++
++  kif_sys_init_config(kif_cf);
++  return (struct proto_config *) kif_cf;
++}
++
++static void
++kif_copy_config(struct proto_config *dest, struct proto_config *src)
++{
++  struct kif_config *d = (struct kif_config *) dest;
++  struct kif_config *s = (struct kif_config *) src;
++
++  /* Shallow copy of everything (just scan_time currently) */
++  proto_copy_rest(dest, src, sizeof(struct kif_config));
++
++  /* Copy primary addr list */
++  cfg_copy_list(&d->primary, &s->primary, sizeof(struct kif_primary_item));
++
++  /* Fix sysdep parts */
++  kif_sys_copy_config(d, s);
++}
++
++
++struct protocol proto_unix_iface = {
++  .name = 		"Device",
++  .template = 		"device%d",
++  .preference =		DEF_PREF_DIRECT,
++  .config_size =	sizeof(struct kif_config),
++  .preconfig =		kif_preconfig,
++  .init =		kif_init,
++  .start =		kif_start,
++  .shutdown =		kif_shutdown,
++  .reconfigure =	kif_reconfigure,
++  .copy_config =	kif_copy_config
++};
++
++/*
++ *	Tracing of routes
++ */
++
++static inline void
++krt_trace_in(struct krt_proto *p, rte *e, char *msg)
++{
++  if (p->p.debug & D_PACKETS)
++    log(L_TRACE "%s: %I/%d: %s", p->p.name, e->net->n.prefix, e->net->n.pxlen, msg);
++}
++
++static inline void
++krt_trace_in_rl(struct tbf *f, struct krt_proto *p, rte *e, char *msg)
++{
++  if (p->p.debug & D_PACKETS)
++    log_rl(f, L_TRACE "%s: %I/%d: %s", p->p.name, e->net->n.prefix, e->net->n.pxlen, msg);
++}
++
++/*
++ *	Inherited Routes
++ */
++
++#ifdef KRT_ALLOW_LEARN
++
++static struct tbf rl_alien = TBF_DEFAULT_LOG_LIMITS;
++
++/*
++ * krt_same_key() specifies what (aside from the net) is the key in
++ * kernel routing tables. It should be OS-dependent, this is for
++ * Linux. It is important for asynchronous alien updates, because a
++ * positive update is implicitly a negative one for any old route with
++ * the same key.
++ */
++
++static inline int
++krt_same_key(rte *a, rte *b)
++{
++  return a->u.krt.metric == b->u.krt.metric;
++}
++
++static inline int
++krt_uptodate(rte *a, rte *b)
++{
++  if (a->attrs != b->attrs)
++    return 0;
++
++  if (a->u.krt.proto != b->u.krt.proto)
++    return 0;
++
++  return 1;
++}
++
++static void
++krt_learn_announce_update(struct krt_proto *p, rte *e)
++{
++  net *n = e->net;
++  rta *aa = rta_clone(e->attrs);
++  rte *ee = rte_get_temp(aa);
++  net *nn = net_get(p->p.table, n->n.prefix, n->n.pxlen);
++  ee->net = nn;
++  ee->pflags = 0;
++  ee->pref = p->p.preference;
++  ee->u.krt = e->u.krt;
++  rte_update(&p->p, nn, ee);
++}
++
++static void
++krt_learn_announce_delete(struct krt_proto *p, net *n)
++{
++  n = net_find(p->p.table, n->n.prefix, n->n.pxlen);
++  rte_update(&p->p, n, NULL);
++}
++
++/* Called when alien route is discovered during scan */
++static void
++krt_learn_scan(struct krt_proto *p, rte *e)
++{
++  net *n0 = e->net;
++  net *n = net_get(&p->krt_table, n0->n.prefix, n0->n.pxlen);
++  rte *m, **mm;
++
++  e->attrs = rta_lookup(e->attrs);
++
++  for(mm=&n->routes; m = *mm; mm=&m->next)
++    if (krt_same_key(m, e))
++      break;
++  if (m)
++    {
++      if (krt_uptodate(m, e))
++	{
++	  krt_trace_in_rl(&rl_alien, p, e, "[alien] seen");
++	  rte_free(e);
++	  m->u.krt.seen = 1;
++	}
++      else
++	{
++	  krt_trace_in(p, e, "[alien] updated");
++	  *mm = m->next;
++	  rte_free(m);
++	  m = NULL;
++	}
++    }
++  else
++    krt_trace_in(p, e, "[alien] created");
++  if (!m)
++    {
++      e->next = n->routes;
++      n->routes = e;
++      e->u.krt.seen = 1;
++    }
++}
++
++static void
++krt_learn_prune(struct krt_proto *p)
++{
++  struct fib *fib = &p->krt_table.fib;
++  struct fib_iterator fit;
++
++  KRT_TRACE(p, D_EVENTS, "Pruning inherited routes");
++
++  FIB_ITERATE_INIT(&fit, fib);
++again:
++  FIB_ITERATE_START(fib, &fit, f)
++    {
++      net *n = (net *) f;
++      rte *e, **ee, *best, **pbest, *old_best;
++
++      /*
++       * Note that old_best may be NULL even if there was an old best route in
++       * the previous step, because it might be replaced in krt_learn_scan().
++       * But in that case there is a new valid best route.
++       */
++
++      old_best = NULL;
++      best = NULL;
++      pbest = NULL;
++      ee = &n->routes;
++      while (e = *ee)
++	{
++	  if (e->u.krt.best)
++	    old_best = e;
++
++	  if (!e->u.krt.seen)
++	    {
++	      *ee = e->next;
++	      rte_free(e);
++	      continue;
++	    }
++
++	  if (!best || best->u.krt.metric > e->u.krt.metric)
++	    {
++	      best = e;
++	      pbest = ee;
++	    }
++
++	  e->u.krt.seen = 0;
++	  e->u.krt.best = 0;
++	  ee = &e->next;
++	}
++      if (!n->routes)
++	{
++	  DBG("%I/%d: deleting\n", n->n.prefix, n->n.pxlen);
++	  if (old_best)
++	    krt_learn_announce_delete(p, n);
++
++	  FIB_ITERATE_PUT(&fit, f);
++	  fib_delete(fib, f);
++	  goto again;
++	}
++
++      best->u.krt.best = 1;
++      *pbest = best->next;
++      best->next = n->routes;
++      n->routes = best;
++
++      if ((best != old_best) || p->reload)
++	{
++	  DBG("%I/%d: announcing (metric=%d)\n", n->n.prefix, n->n.pxlen, best->u.krt.metric);
++	  krt_learn_announce_update(p, best);
++	}
++      else
++	DBG("%I/%d: uptodate (metric=%d)\n", n->n.prefix, n->n.pxlen, best->u.krt.metric);
++    }
++  FIB_ITERATE_END(f);
++
++  p->reload = 0;
++}
++
++static void
++krt_learn_async(struct krt_proto *p, rte *e, int new)
++{
++  net *n0 = e->net;
++  net *n = net_get(&p->krt_table, n0->n.prefix, n0->n.pxlen);
++  rte *g, **gg, *best, **bestp, *old_best;
++
++  e->attrs = rta_lookup(e->attrs);
++
++  old_best = n->routes;
++  for(gg=&n->routes; g = *gg; gg = &g->next)
++    if (krt_same_key(g, e))
++      break;
++  if (new)
++    {
++      if (g)
++	{
++	  if (krt_uptodate(g, e))
++	    {
++	      krt_trace_in(p, e, "[alien async] same");
++	      rte_free(e);
++	      return;
++	    }
++	  krt_trace_in(p, e, "[alien async] updated");
++	  *gg = g->next;
++	  rte_free(g);
++	}
++      else
++	krt_trace_in(p, e, "[alien async] created");
++
++      e->next = n->routes;
++      n->routes = e;
++    }
++  else if (!g)
++    {
++      krt_trace_in(p, e, "[alien async] delete failed");
++      rte_free(e);
++      return;
++    }
++  else
++    {
++      krt_trace_in(p, e, "[alien async] removed");
++      *gg = g->next;
++      rte_free(e);
++      rte_free(g);
++    }
++  best = n->routes;
++  bestp = &n->routes;
++  for(gg=&n->routes; g=*gg; gg=&g->next)
++  {
++    if (best->u.krt.metric > g->u.krt.metric)
++      {
++	best = g;
++	bestp = gg;
++      }
++
++    g->u.krt.best = 0;
++  }
++
++  if (best)
++    {
++      best->u.krt.best = 1;
++      *bestp = best->next;
++      best->next = n->routes;
++      n->routes = best;
++    }
++
++  if (best != old_best)
++    {
++      DBG("krt_learn_async: distributing change\n");
++      if (best)
++	krt_learn_announce_update(p, best);
++      else
++	krt_learn_announce_delete(p, n);
++    }
++}
++
++static void
++krt_learn_init(struct krt_proto *p)
++{
++  if (KRT_CF->learn)
++    rt_setup(p->p.pool, &p->krt_table, "Inherited", NULL);
++}
++
++static void
++krt_dump(struct proto *P)
++{
++  struct krt_proto *p = (struct krt_proto *) P;
++
++  if (!KRT_CF->learn)
++    return;
++  debug("KRT: Table of inheritable routes\n");
++  rt_dump(&p->krt_table);
++}
++
++static void
++krt_dump_attrs(rte *e)
++{
++  debug(" [m=%d,p=%d]", e->u.krt.metric, e->u.krt.proto);
++}
++
++#endif
++
++/*
++ *	Routes
++ */
++
++static void
++krt_flush_routes(struct krt_proto *p)
++{
++  struct rtable *t = p->p.table;
++
++  KRT_TRACE(p, D_EVENTS, "Flushing kernel routes");
++  FIB_WALK(&t->fib, f)
++    {
++      net *n = (net *) f;
++      rte *e = n->routes;
++      if (rte_is_valid(e) && (n->n.flags & KRF_INSTALLED))
++	{
++	  /* FIXME: this does not work if gw is changed in export filter */
++	  krt_replace_rte(p, e->net, NULL, e, NULL);
++	  n->n.flags &= ~KRF_INSTALLED;
++	}
++    }
++  FIB_WALK_END;
++}
++
++static struct rte *
++krt_export_net(struct krt_proto *p, net *net, rte **rt_free, ea_list **tmpa)
++{
++  struct announce_hook *ah = p->p.main_ahook;
++  struct filter *filter = ah->out_filter;
++  rte *rt;
++
++  if (p->p.accept_ra_types == RA_MERGED)
++    return rt_export_merged(ah, net, rt_free, tmpa, krt_filter_lp, 1);
++
++  rt = net->routes;
++  *rt_free = NULL;
++
++  if (!rte_is_valid(rt))
++    return NULL;
++
++  if (filter == FILTER_REJECT)
++    return NULL;
++
++  struct proto *src = rt->attrs->src->proto;
++  *tmpa = src->make_tmp_attrs ? src->make_tmp_attrs(rt, krt_filter_lp) : NULL;
++
++  /* We could run krt_import_control() here, but it is already handled by KRF_INSTALLED */
++
++  if (filter == FILTER_ACCEPT)
++    goto accept;
++
++  if (f_run(filter, &rt, tmpa, krt_filter_lp, FF_FORCE_TMPATTR | FF_SILENT) > F_ACCEPT)
++    goto reject;
++
++
++accept:
++  if (rt != net->routes)
++    *rt_free = rt;
++  return rt;
++
++reject:
++  if (rt != net->routes)
++    rte_free(rt);
++  return NULL;
++}
++
++static int
++krt_same_dest(rte *k, rte *e)
++{
++  rta *ka = k->attrs, *ea = e->attrs;
++
++  if (ka->dest != ea->dest)
++    return 0;
++  switch (ka->dest)
++    {
++    case RTD_ROUTER:
++      return ipa_equal(ka->gw, ea->gw);
++    case RTD_DEVICE:
++      return !strcmp(ka->iface->name, ea->iface->name);
++    case RTD_MULTIPATH:
++      return mpnh_same(ka->nexthops, ea->nexthops);
++    default:
++      return 1;
++    }
++}
++
++/*
++ *  This gets called back when the low-level scanning code discovers a route.
++ *  We expect that the route is a temporary rte and its attributes are uncached.
++ */
++
++void
++krt_got_route(struct krt_proto *p, rte *e)
++{
++  net *net = e->net;
++  int verdict;
++
++#ifdef KRT_ALLOW_LEARN
++  switch (e->u.krt.src)
++    {
++    case KRT_SRC_KERNEL:
++      verdict = KRF_IGNORE;
++      goto sentenced;
++
++    case KRT_SRC_REDIRECT:
++      verdict = KRF_DELETE;
++      goto sentenced;
++
++    case  KRT_SRC_ALIEN:
++      if (KRT_CF->learn)
++	krt_learn_scan(p, e);
++      else
++	{
++	  krt_trace_in_rl(&rl_alien, p, e, "[alien] ignored");
++	  rte_free(e);
++	}
++      return;
++    }
++#endif
++  /* The rest is for KRT_SRC_BIRD (or KRT_SRC_UNKNOWN) */
++
++  if (net->n.flags & KRF_VERDICT_MASK)
++    {
++      /* Route to this destination was already seen. Strange, but it happens... */
++      krt_trace_in(p, e, "already seen");
++      rte_free(e);
++      return;
++    }
++
++  if (!p->ready)
++    {
++      /* We wait for the initial feed to have correct KRF_INSTALLED flag */
++      verdict = KRF_IGNORE;
++      goto sentenced;
++    }
++
++  if (net->n.flags & KRF_INSTALLED)
++    {
++      rte *new, *rt_free;
++      ea_list *tmpa;
++
++      new = krt_export_net(p, net, &rt_free, &tmpa);
++
++      /* TODO: There also may be changes in route eattrs, we ignore that for now. */
++
++      if (!new)
++	verdict = KRF_DELETE;
++      else if ((net->n.flags & KRF_SYNC_ERROR) || !krt_same_dest(e, new))
++	verdict = KRF_UPDATE;
++      else
++	verdict = KRF_SEEN;
++
++      if (rt_free)
++	rte_free(rt_free);
++
++      lp_flush(krt_filter_lp);
++    }
++  else
++    verdict = KRF_DELETE;
++
++ sentenced:
++  krt_trace_in(p, e, ((char *[]) { "?", "seen", "will be updated", "will be removed", "ignored" }) [verdict]);
++  net->n.flags = (net->n.flags & ~KRF_VERDICT_MASK) | verdict;
++  if (verdict == KRF_UPDATE || verdict == KRF_DELETE)
++    {
++      /* Get a cached copy of attributes and temporarily link the route */
++      rta *a = e->attrs;
++      a->source = RTS_DUMMY;
++      e->attrs = rta_lookup(a);
++      e->next = net->routes;
++      net->routes = e;
++    }
++  else
++    rte_free(e);
++}
++
++static void
++krt_prune(struct krt_proto *p)
++{
++  struct rtable *t = p->p.table;
++
++  KRT_TRACE(p, D_EVENTS, "Pruning table %s", t->name);
++  FIB_WALK(&t->fib, f)
++    {
++      net *n = (net *) f;
++      int verdict = f->flags & KRF_VERDICT_MASK;
++      rte *new, *old, *rt_free = NULL;
++      ea_list *tmpa = NULL;
++
++      if (verdict == KRF_UPDATE || verdict == KRF_DELETE)
++	{
++	  /* Get a dummy route from krt_got_route() */
++	  old = n->routes;
++	  n->routes = old->next;
++	}
++      else
++	old = NULL;
++
++      if (verdict == KRF_CREATE || verdict == KRF_UPDATE)
++	{
++	  /* We have to run export filter to get proper 'new' route */
++	  new = krt_export_net(p, n, &rt_free, &tmpa);
++
++	  if (!new)
++	    verdict = (verdict == KRF_CREATE) ? KRF_IGNORE : KRF_DELETE;
++	  else
++	    tmpa = ea_append(tmpa, new->attrs->eattrs);
++	}
++      else
++	new = NULL;
++
++      switch (verdict)
++	{
++	case KRF_CREATE:
++	  if (new && (f->flags & KRF_INSTALLED))
++	    {
++	      krt_trace_in(p, new, "reinstalling");
++	      krt_replace_rte(p, n, new, NULL, tmpa);
++	    }
++	  break;
++	case KRF_SEEN:
++	case KRF_IGNORE:
++	  /* Nothing happens */
++	  break;
++	case KRF_UPDATE:
++	  krt_trace_in(p, new, "updating");
++	  krt_replace_rte(p, n, new, old, tmpa);
++	  break;
++	case KRF_DELETE:
++	  krt_trace_in(p, old, "deleting");
++	  krt_replace_rte(p, n, NULL, old, NULL);
++	  break;
++	default:
++	  bug("krt_prune: invalid route status");
++	}
++
++      if (old)
++	rte_free(old);
++      if (rt_free)
++	rte_free(rt_free);
++      lp_flush(krt_filter_lp);
++      f->flags &= ~KRF_VERDICT_MASK;
++    }
++  FIB_WALK_END;
++
++#ifdef KRT_ALLOW_LEARN
++  if (KRT_CF->learn)
++    krt_learn_prune(p);
++#endif
++
++  if (p->ready)
++    p->initialized = 1;
++}
++
++void
++krt_got_route_async(struct krt_proto *p, rte *e, int new)
++{
++  net *net = e->net;
++
++  switch (e->u.krt.src)
++    {
++    case KRT_SRC_BIRD:
++      ASSERT(0);			/* Should be filtered by the back end */
++
++    case KRT_SRC_REDIRECT:
++      if (new)
++	{
++	  krt_trace_in(p, e, "[redirect] deleting");
++	  krt_replace_rte(p, net, NULL, e, NULL);
++	}
++      /* If !new, it is probably echo of our deletion */
++      break;
++
++#ifdef KRT_ALLOW_LEARN
++    case KRT_SRC_ALIEN:
++      if (KRT_CF->learn)
++	{
++	  krt_learn_async(p, e, new);
++	  return;
++	}
++#endif
++    }
++  rte_free(e);
++}
++
++/*
++ *	Periodic scanning
++ */
++
++
++#ifdef CONFIG_ALL_TABLES_AT_ONCE
++
++static timer *krt_scan_timer;
++static int krt_scan_count;
++
++static void
++krt_scan(timer *t UNUSED)
++{
++  struct krt_proto *p;
++
++  kif_force_scan();
++
++  /* We need some node to decide whether to print the debug messages or not */
++  p = SKIP_BACK(struct krt_proto, krt_node, HEAD(krt_proto_list));
++  KRT_TRACE(p, D_EVENTS, "Scanning routing table");
++
++  krt_do_scan(NULL);
++
++  void *q;
++  WALK_LIST(q, krt_proto_list)
++  {
++    p = SKIP_BACK(struct krt_proto, krt_node, q);
++    krt_prune(p);
++  }
++}
++
++static void
++krt_scan_timer_start(struct krt_proto *p)
++{
++  if (!krt_scan_count)
++    krt_scan_timer = tm_new_set(krt_pool, krt_scan, NULL, 0, KRT_CF->scan_time);
++
++  krt_scan_count++;
++
++  tm_start(krt_scan_timer, 1);
++}
++
++static void
++krt_scan_timer_stop(struct krt_proto *p UNUSED)
++{
++  krt_scan_count--;
++
++  if (!krt_scan_count)
++  {
++    rfree(krt_scan_timer);
++    krt_scan_timer = NULL;
++  }
++}
++
++static void
++krt_scan_timer_kick(struct krt_proto *p UNUSED)
++{
++  tm_start(krt_scan_timer, 0);
++}
++
++#else
++
++static void
++krt_scan(timer *t)
++{
++  struct krt_proto *p = t->data;
++
++  kif_force_scan();
++
++  KRT_TRACE(p, D_EVENTS, "Scanning routing table");
++  krt_do_scan(p);
++  krt_prune(p);
++}
++
++static void
++krt_scan_timer_start(struct krt_proto *p)
++{
++  p->scan_timer = tm_new_set(p->p.pool, krt_scan, p, 0, KRT_CF->scan_time);
++  tm_start(p->scan_timer, 1);
++}
++
++static void
++krt_scan_timer_stop(struct krt_proto *p)
++{
++  tm_stop(p->scan_timer);
++}
++
++static void
++krt_scan_timer_kick(struct krt_proto *p)
++{
++  tm_start(p->scan_timer, 0);
++}
++
++#endif
++
++
++
++
++/*
++ *	Updates
++ */
++
++static struct ea_list *
++krt_make_tmp_attrs(rte *rt, struct linpool *pool)
++{
++  struct ea_list *l = lp_alloc(pool, sizeof(struct ea_list) + 2 * sizeof(eattr));
++
++  l->next = NULL;
++  l->flags = EALF_SORTED;
++  l->count = 2;
++
++  l->attrs[0].id = EA_KRT_SOURCE;
++  l->attrs[0].flags = 0;
++  l->attrs[0].type = EAF_TYPE_INT | EAF_TEMP;
++  l->attrs[0].u.data = rt->u.krt.proto;
++
++  l->attrs[1].id = EA_KRT_METRIC;
++  l->attrs[1].flags = 0;
++  l->attrs[1].type = EAF_TYPE_INT | EAF_TEMP;
++  l->attrs[1].u.data = rt->u.krt.metric;
++
++  return l;
++}
++
++static void
++krt_store_tmp_attrs(rte *rt, struct ea_list *attrs)
++{
++  /* EA_KRT_SOURCE is read-only */
++  rt->u.krt.metric = ea_get_int(attrs, EA_KRT_METRIC, 0);
++}
++
++static int
++krt_import_control(struct proto *P, rte **new, ea_list **attrs UNUSED, struct linpool *pool UNUSED)
++{
++  struct krt_proto *p = (struct krt_proto *) P;
++  rte *e = *new;
++
++  if (e->attrs->src->proto == P)
++  {
++#ifdef CONFIG_SINGLE_ROUTE
++    /*
++     * Implicit withdraw - when the imported kernel route becomes the best one,
++     * we know that the previous one exported to the kernel was already removed,
++     * but if we processed the update as usual, we would send withdraw to the
++     * kernel, which would remove the new imported route instead.
++     *
++     * We will remove KRT_INSTALLED flag, which stops such withdraw to be
++     * processed in krt_rt_notify() and krt_replace_rte().
++     */
++    if (e == e->net->routes)
++      e->net->n.flags &= ~KRF_INSTALLED;
++#endif
++    return -1;
++  }
++
++  if (!KRT_CF->devroutes &&
++      (e->attrs->dest == RTD_DEVICE) &&
++      (e->attrs->source != RTS_STATIC_DEVICE))
++    return -1;
++
++  if (!krt_capable(e))
++    return -1;
++
++  return 0;
++}
++
++static void
++krt_rt_notify(struct proto *P, struct rtable *table UNUSED, net *net,
++	      rte *new, rte *old, struct ea_list *eattrs)
++{
++  struct krt_proto *p = (struct krt_proto *) P;
++
++  if (config->shutdown)
++    return;
++  if (!(net->n.flags & KRF_INSTALLED))
++    old = NULL;
++  if (new)
++    net->n.flags |= KRF_INSTALLED;
++  else
++    net->n.flags &= ~KRF_INSTALLED;
++  if (p->initialized)		/* Before first scan we don't touch the routes */
++    krt_replace_rte(p, net, new, old, eattrs);
++}
++
++static void
++krt_if_notify(struct proto *P, uint flags, struct iface *iface UNUSED)
++{
++  struct krt_proto *p = (struct krt_proto *) P;
++
++  /*
++   * When interface went down, we should remove routes to it. In the ideal world,
++   * OS kernel would send us route removal notifications in such cases, but we
++   * cannot rely on it as it is often not true. E.g. Linux kernel removes related
++   * routes when an interface went down, but it does not notify userspace about
++   * that. To be sure, we just schedule a scan to ensure synchronization.
++   */
++
++  if ((flags & IF_CHANGE_DOWN) && KRT_CF->learn)
++    krt_scan_timer_kick(p);
++}
++
++static int
++krt_reload_routes(struct proto *P)
++{
++  struct krt_proto *p = (struct krt_proto *) P;
++
++  /* Although we keep learned routes in krt_table, we rather schedule a scan */
++
++  if (KRT_CF->learn)
++  {
++    p->reload = 1;
++    krt_scan_timer_kick(p);
++  }
++
++  return 1;
++}
++
++static void
++krt_feed_end(struct proto *P)
++{
++  struct krt_proto *p = (struct krt_proto *) P;
++
++  p->ready = 1;
++  krt_scan_timer_kick(p);
++}
++
++
++static int
++krt_rte_same(rte *a, rte *b)
++{
++  /* src is always KRT_SRC_ALIEN and type is irrelevant */
++  return (a->u.krt.proto == b->u.krt.proto) && (a->u.krt.metric == b->u.krt.metric);
++}
++
++
++/*
++ *	Protocol glue
++ */
++
++struct krt_config *krt_cf;
++
++static struct proto *
++krt_init(struct proto_config *C)
++{
++  struct krt_proto *p = proto_new(C, sizeof(struct krt_proto));
++  struct krt_config *c = (struct krt_config *) C;
++
++  p->p.accept_ra_types = c->merge_paths ? RA_MERGED : RA_OPTIMAL;
++  p->p.merge_limit = c->merge_paths;
++  p->p.import_control = krt_import_control;
++  p->p.rt_notify = krt_rt_notify;
++  p->p.if_notify = krt_if_notify;
++  p->p.reload_routes = krt_reload_routes;
++  p->p.feed_end = krt_feed_end;
++  p->p.make_tmp_attrs = krt_make_tmp_attrs;
++  p->p.store_tmp_attrs = krt_store_tmp_attrs;
++  p->p.rte_same = krt_rte_same;
++
++  krt_sys_init(p);
++  return &p->p;
++}
++
++static int
++krt_start(struct proto *P)
++{
++  struct krt_proto *p = (struct krt_proto *) P;
++
++  add_tail(&krt_proto_list, &p->krt_node);
++
++#ifdef KRT_ALLOW_LEARN
++  krt_learn_init(p);
++#endif
++
++  if (!krt_sys_start(p))
++  {
++    rem_node(&p->krt_node);
++    return PS_START;
++  }
++
++  krt_scan_timer_start(p);
++
++  if (P->gr_recovery && KRT_CF->graceful_restart)
++    P->gr_wait = 1;
++
++  return PS_UP;
++}
++
++static int
++krt_shutdown(struct proto *P)
++{
++  struct krt_proto *p = (struct krt_proto *) P;
++
++  krt_scan_timer_stop(p);
++
++  /* FIXME we should flush routes even when persist during reconfiguration */
++  if (p->initialized && !KRT_CF->persist)
++    krt_flush_routes(p);
++
++  p->ready = 0;
++  p->initialized = 0;
++
++  if (p->p.proto_state == PS_START)
++    return PS_DOWN;
++
++  krt_sys_shutdown(p);
++  rem_node(&p->krt_node);
++
++  return PS_DOWN;
++}
++
++static int
++krt_reconfigure(struct proto *p, struct proto_config *new)
++{
++  struct krt_config *o = (struct krt_config *) p->cf;
++  struct krt_config *n = (struct krt_config *) new;
++
++  if (!krt_sys_reconfigure((struct krt_proto *) p, n, o))
++    return 0;
++
++  /* persist, graceful restart need not be the same */
++  return o->scan_time == n->scan_time && o->learn == n->learn &&
++    o->devroutes == n->devroutes && o->merge_paths == n->merge_paths;
++}
++
++static void
++krt_preconfig(struct protocol *P UNUSED, struct config *c)
++{
++  krt_cf = NULL;
++  krt_sys_preconfig(c);
++}
++
++static void
++krt_postconfig(struct proto_config *C)
++{
++  struct krt_config *c = (struct krt_config *) C;
++
++#ifdef CONFIG_ALL_TABLES_AT_ONCE
++  if (krt_cf->scan_time != c->scan_time)
++    cf_error("All kernel syncers must use the same table scan interval");
++#endif
++
++  if (C->table->krt_attached)
++    cf_error("Kernel syncer (%s) already attached to table %s", C->table->krt_attached->name, C->table->name);
++  C->table->krt_attached = C;
++  krt_sys_postconfig(c);
++}
++
++struct proto_config *
++krt_init_config(int class)
++{
++#ifndef CONFIG_MULTIPLE_TABLES
++  if (krt_cf)
++    cf_error("Kernel protocol already defined");
++#endif
++
++  krt_cf = (struct krt_config *) proto_config_new(&proto_unix_kernel, class);
++  krt_cf->scan_time = 60;
++
++  krt_sys_init_config(krt_cf);
++  return (struct proto_config *) krt_cf;
++}
++
++static void
++krt_copy_config(struct proto_config *dest, struct proto_config *src)
++{
++  struct krt_config *d = (struct krt_config *) dest;
++  struct krt_config *s = (struct krt_config *) src;
++
++  /* Shallow copy of everything */
++  proto_copy_rest(dest, src, sizeof(struct krt_config));
++
++  /* Fix sysdep parts */
++  krt_sys_copy_config(d, s);
++}
++
++static int
++krt_get_attr(eattr *a, byte *buf, int buflen)
++{
++  switch (a->id)
++  {
++  case EA_KRT_SOURCE:
++    bsprintf(buf, "source");
++    return GA_NAME;
++
++  case EA_KRT_METRIC:
++    bsprintf(buf, "metric");
++    return GA_NAME;
++
++  default:
++    return krt_sys_get_attr(a, buf, buflen);
++  }
++}
++
++
++struct protocol proto_unix_kernel = {
++  .name =		"Kernel",
++  .template =		"kernel%d",
++  .attr_class =		EAP_KRT,
++  .preference =		DEF_PREF_INHERITED,
++  .config_size =	sizeof(struct krt_config),
++  .preconfig =		krt_preconfig,
++  .postconfig =		krt_postconfig,
++  .init =		krt_init,
++  .start =		krt_start,
++  .shutdown =		krt_shutdown,
++  .reconfigure =	krt_reconfigure,
++  .copy_config =	krt_copy_config,
++  .get_attr =		krt_get_attr,
++#ifdef KRT_ALLOW_LEARN
++  .dump =		krt_dump,
++  .dump_attrs =		krt_dump_attrs,
++#endif
++};
+diff --git a/sysdep/unix/krt.h b/sysdep/unix/krt.h
+new file mode 100644
+index 00000000..d4a8717e
+--- /dev/null
++++ b/sysdep/unix/krt.h
+@@ -0,0 +1,155 @@
++/*
++ *	BIRD -- UNIX Kernel Route Syncer
++ *
++ *	(c) 1998--2000 Martin Mares <mj@ucw.cz>
++ *
++ *	Can be freely distributed and used under the terms of the GNU GPL.
++ */
++
++#ifndef _BIRD_KRT_H_
++#define _BIRD_KRT_H_
++
++struct config;
++struct krt_config;
++struct krt_proto;
++struct kif_config;
++struct kif_proto;
++
++#include "lib/krt-sys.h"
++
++/* Flags stored in net->n.flags, rest are in nest/route.h */
++
++#define KRF_VERDICT_MASK 0x0f
++#define KRF_CREATE 0			/* Not seen in kernel table */
++#define KRF_SEEN 1			/* Seen in kernel table during last scan */
++#define KRF_UPDATE 2			/* Need to update this entry */
++#define KRF_DELETE 3			/* Should be deleted */
++#define KRF_IGNORE 4			/* To be ignored */
++
++#define KRT_DEFAULT_ECMP_LIMIT	16
++
++#define EA_KRT_SOURCE	EA_CODE(EAP_KRT, 0)
++#define EA_KRT_METRIC	EA_CODE(EAP_KRT, 1)
++
++/* Whenever we recognize our own routes, we allow learing of foreign routes */
++
++#ifdef CONFIG_SELF_CONSCIOUS
++#define KRT_ALLOW_LEARN
++#endif
++
++/* krt.c */
++
++extern struct protocol proto_unix_kernel;
++
++struct krt_config {
++  struct proto_config c;
++  struct krt_params sys;	/* Sysdep params */
++  int persist;			/* Keep routes when we exit */
++  int scan_time;		/* How often we re-scan routes */
++  int learn;			/* Learn routes from other sources */
++  int devroutes;		/* Allow export of device routes */
++  int graceful_restart;		/* Regard graceful restart recovery */
++  int merge_paths;		/* Exported routes are merged for ECMP */
++};
++
++struct krt_proto {
++  struct proto p;
++  struct krt_state sys;		/* Sysdep state */
++
++#ifdef KRT_ALLOW_LEARN
++  struct rtable krt_table;	/* Internal table of inherited routes */
++#endif
++
++#ifndef CONFIG_ALL_TABLES_AT_ONCE
++  timer *scan_timer;
++#endif
++
++  node krt_node;		/* Node in krt_proto_list */
++  byte ready;			/* Initial feed has been finished */
++  byte initialized;		/* First scan has been finished */
++  byte reload;			/* Next scan is doing reload */
++};
++
++extern pool *krt_pool;
++
++#define KRT_CF ((struct krt_config *)p->p.cf)
++
++#define KRT_TRACE(pr, fl, msg, args...) do {	\
++  DBG("KRT: " msg "\n" , ## args);		\
++  if (pr->p.debug & fl)				\
++    { log(L_TRACE "%s: " msg, pr->p.name , ## args); } } while(0)
++
++struct proto_config * kif_init_config(int class);
++void kif_request_scan(void);
++void krt_got_route(struct krt_proto *p, struct rte *e);
++void krt_got_route_async(struct krt_proto *p, struct rte *e, int new);
++
++/* Values for rte->u.krt_sync.src */
++#define KRT_SRC_UNKNOWN	-1	/* Nobody knows */
++#define KRT_SRC_BIRD	 0	/* Our route (not passed in async mode) */
++#define KRT_SRC_REDIRECT 1	/* Redirect route, delete it */
++#define KRT_SRC_ALIEN	 2	/* Route installed by someone else */
++#define KRT_SRC_KERNEL	 3	/* Kernel routes, are ignored by krt syncer */
++
++extern struct protocol proto_unix_iface;
++
++struct kif_primary_item {
++  node n;
++  byte *pattern;
++  ip_addr prefix;
++  int pxlen;
++};
++
++struct kif_config {
++  struct proto_config c;
++  struct kif_params sys;	/* Sysdep params */
++  int scan_time;		/* How often we re-scan interfaces */
++  list primary;			/* Preferences for primary addresses (struct kif_primary_item) */
++};
++
++struct kif_proto {
++  struct proto p;
++  struct kif_state sys;		/* Sysdep state */
++};
++
++struct kif_proto *kif_proto;
++
++#define KIF_CF ((struct kif_config *)p->p.cf)
++
++struct proto_config * krt_init_config(int class);
++
++
++/* krt sysdep */
++
++void krt_sys_io_init(void);
++void krt_sys_init(struct krt_proto *);
++int krt_sys_start(struct krt_proto *);
++void krt_sys_shutdown(struct krt_proto *);
++int krt_sys_reconfigure(struct krt_proto *p UNUSED, struct krt_config *n, struct krt_config *o);
++
++void krt_sys_preconfig(struct config *);
++void krt_sys_postconfig(struct krt_config *);
++void krt_sys_init_config(struct krt_config *);
++void krt_sys_copy_config(struct krt_config *, struct krt_config *);
++
++int  krt_capable(rte *e);
++void krt_do_scan(struct krt_proto *);
++void krt_replace_rte(struct krt_proto *p, net *n, rte *new, rte *old, struct ea_list *eattrs);
++int krt_sys_get_attr(eattr *a, byte *buf, int buflen);
++
++
++/* kif sysdep */
++
++void kif_sys_init(struct kif_proto *);
++void kif_sys_start(struct kif_proto *);
++void kif_sys_shutdown(struct kif_proto *);
++int kif_sys_reconfigure(struct kif_proto *, struct kif_config *, struct kif_config *);
++
++void kif_sys_init_config(struct kif_config *);
++void kif_sys_copy_config(struct kif_config *, struct kif_config *);
++
++void kif_do_scan(struct kif_proto *);
++
++struct ifa *kif_get_primary_ip(struct iface *i);
++
++#endif
+diff --git a/sysdep/unix/log.c b/sysdep/unix/log.c
+index e488cc6a..034861f8 100644
+--- a/sysdep/unix/log.c
++++ b/sysdep/unix/log.c
+@@ -2,8 +2,6 @@
+  *	BIRD Library -- Logging Functions
+  *
+  *	(c) 1998--2000 Martin Mares <mj@ucw.cz>
+- *      (c) 2004       Ondrej Filip <feela@network.cz>
+- *      (c) 2014--2017 Cisco Systems, Inc.
+  *
+  *	Can be freely distributed and used under the terms of the GNU GPL.
+  */
+@@ -30,7 +28,6 @@
+ #include "lib/string.h"
+ #include "lib/lists.h"
+ #include "lib/unix.h"
+-#include <sockproxy.h>
+ 
+ static FILE *dbgf;
+ static list *current_log_list;
+@@ -344,24 +341,3 @@ log_init_debug(char *f)
+   if (dbgf)
+     setvbuf(dbgf, NULL, _IONBF, 0);
+ }
+-
+-void
+-sockproxy_debug(enum csp_debug_class class, const char* format, va_list va)
+-{
+-  int log_class;
+-  switch (class) {
+-  case CSP_DEBUG_WARN:
+-      log_class = L_WARN[0];
+-      break;
+-  case CSP_DEBUG_ERR:
+-      log_class = L_ERR[0];
+-      break;
+-  case CSP_DEBUG_CRIT:
+-      log_class = L_FATAL[0];
+-      break;
+-  default:
+-      log_class = L_DEBUG[0];
+-      break;
+-  }
+-  vlog(log_class, format, va);
+-}
+diff --git a/sysdep/unix/main.c b/sysdep/unix/main.c
+index be5e8f3b..01c0dedb 100644
+--- a/sysdep/unix/main.c
++++ b/sysdep/unix/main.c
+@@ -1,8 +1,7 @@
+ /*
+- *	BIRD Internet Routing Daemon -- Click Entry Point
++ *	BIRD Internet Routing Daemon -- Unix Entry Point
+  *
+  *	(c) 1998--2000 Martin Mares <mj@ucw.cz>
+- *      (c) 2014--2017 Cisco Systems, Inc.
+  *
+  *	Can be freely distributed and used under the terms of the GNU GPL.
+  */
+@@ -39,9 +38,6 @@
+ 
+ #include "unix.h"
+ #include "krt.h"
+-#include "kif.h"
+-
+-#include <sockproxy.h>
+ 
+ /*
+  *	Debugging
+@@ -351,80 +347,6 @@ cmd_reconfig_undo(void)
+   cmd_reconfig_msg(r);
+ }
+ 
+-static int
+-intcompar(const void* int1, const void* int2)
+-{
+-    return (*(int*)int1 - *(int*)int2);
+-}
+-
+-void
+-cmd_sockproxy_stats(void)
+-{
+-  int count = 0;
+-
+-  struct sockproxy_stats stats;
+-
+-  if (CSP_get_stats(&stats) < 0)
+-    {
+-      cli_msg(8, "Error reading stats");
+-      return;
+-    }
+-
+-  cli_msg(-1201, "RX Pkts            : %u", stats.rx_packets);
+-  cli_msg(-1201, "RX Undelivered Pkts: %u", stats.rx_undelivered_packets);
+-  cli_msg(-1201, "TX Pkts            : %u", stats.tx_packets);
+-  cli_msg(-1201, "");
+-
+-  if (CSP_get_open_sockets(NULL, &count) < 0 && errno != ENOSPC)
+-    {
+-      cli_msg(8, "Error reading number of sockets");
+-      return;
+-    }
+-
+-  int fds[count];
+-  if (CSP_get_open_sockets(fds, &count) < 0)
+-    {
+-      cli_msg(8, "Error reading sockets");
+-      return;
+-    }
+-
+-  qsort(fds, count, sizeof(int), intcompar);
+-
+-  cli_msg(-1201, "%-5s\t%-10s\t%-15s\t%-15s\t%-15s\t%-15s", "FD", "Device", "RX Pkts",
+-          "RX Drop Pkts", "RX Queued", "TX Pkts");
+-  int i;
+-  for (i = 0; i < count; i++)
+-    {
+-      struct sockproxy_socket_stats sockstats;
+-      if (CSP_get_socket_stats(fds[i], &sockstats) < 0)
+-        {
+-          cli_msg(8, "Error reading stats");
+-          return;
+-        }
+-
+-      char device[IFNAMSIZ];
+-      socklen_t optlen = IFNAMSIZ;
+-      if (CSP_getsockopt(fds[i], SOL_SOCKET, SO_BINDTODEVICE, device, &optlen) < 0)
+-        {
+-          cli_msg(8, "Error getting device");
+-          return;
+-        }
+-
+-      cli_msg(-1201, "%-5d\t%-10s\t%-15u\t%-15u\t%-15u\t%-15u", fds[i], device, sockstats.rx_packets,
+-              sockstats.rx_dropped_packets, sockstats.rx_waiting, sockstats.tx_packets);
+-
+-    }
+-  cli_msg(0, "");
+-}
+-
+-void cmd_sockproxy_reset_stats(void)
+-{
+-  if (CSP_reset_stats() < 0)
+-    cli_msg(8, "Error resetting stats");
+-  else
+-    cli_msg(0, "");
+-}
+-
+ /*
+  *	Command-Line Interface
+  */
+@@ -700,14 +622,12 @@ signal_init(void)
+  *	Parsing of command-line arguments
+  */
+ 
+-static char *opt_list = "c:dD:ps:P:u:g:flRkm:";
++static char *opt_list = "c:dD:ps:P:u:g:flRh";
+ static int parse_and_exit;
+ char *bird_name;
+ static char *use_user;
+ static char *use_group;
+ static int run_in_foreground = 0;
+-char *click_tunnel_name;
+-int click_tunnel_socket = 0;
+ 
+ static void
+ display_usage(void)
+@@ -737,11 +657,7 @@ display_help(void)
+     "  -R                   Apply graceful restart recovery after start\n"
+     "  -s <control-socket>  Use given filename for a control socket\n"
+     "  -u <user>            Drop privileges and use given user ID\n"
+-    "  --version            Display version of BIRD\n"
+-    "\n"
+-    "Meraki options: \n"
+-    "  -k                   Enable Click tunnel\n"
+-    "  -m                   Click tunnel path\n");
++    "  --version            Display version of BIRD\n");
+ 
+   exit(0);
+ }
+@@ -873,12 +789,6 @@ parse_args(int argc, char **argv)
+       case 'h':
+ 	display_help();
+ 	break;
+-      case 'k':
+-        click_tunnel_socket = 1;
+-        break;
+-      case 'm':
+-        click_tunnel_name = optarg;
+-        break;
+       default:
+ 	fputc('\n', stderr);
+ 	display_usage();
+@@ -895,8 +805,6 @@ parse_args(int argc, char **argv)
+  *	Hic Est main()
+  */
+ 
+-void sockproxy_debug(enum csp_debug_class class, const char* format, va_list va);
+-
+ int
+ main(int argc, char **argv)
+ {
+@@ -917,7 +825,6 @@ main(int argc, char **argv)
+   if_init();
+   roa_init();
+   config_init();
+-  CSP_register_debug(sockproxy_debug);
+ 
+   uid_t use_uid = get_uid(use_user);
+   gid_t use_gid = get_gid(use_group);
+@@ -938,8 +845,8 @@ main(int argc, char **argv)
+     open_pid_file();
+ 
+   protos_build();
+-  proto_build(&proto_click_kernel);
+-  proto_build(&proto_click_iface);
++  proto_build(&proto_unix_kernel);
++  proto_build(&proto_unix_iface);
+ 
+   struct config *conf = read_config();
+ 
+diff --git a/sysdep/unix/unix.h b/sysdep/unix/unix.h
+index 1225a264..c71f7940 100644
+--- a/sysdep/unix/unix.h
++++ b/sysdep/unix/unix.h
+@@ -2,7 +2,6 @@
+  *	BIRD -- Declarations Common to Unix Port
+  *
+  *	(c) 1998--2000 Martin Mares <mj@ucw.cz>
+- *	(c) 2014--2017 Cisco Systems, Inc.
+  *
+  *	Can be freely distributed and used under the terms of the GNU GPL.
+  */
+@@ -28,8 +27,6 @@ void cmd_reconfig(char *name, int type, int timeout);
+ void cmd_reconfig_confirm(void);
+ void cmd_reconfig_undo(void);
+ void cmd_shutdown(void);
+-void cmd_sockproxy_stats(void);
+-void cmd_sockproxy_reset_stats(void);
+ 
+ #define UNIX_DEFAULT_CONFIGURE_TIMEOUT	300
+ 
+-- 
+2.22.0
+

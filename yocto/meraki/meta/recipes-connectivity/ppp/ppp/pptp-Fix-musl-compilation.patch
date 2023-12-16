@@ -1,0 +1,14 @@
+diff --git a/pppd/plugins/pptp/pptp.c b/pppd/plugins/pptp/pptp.c
+index ecb9850..02f5d12 100644
+--- a/pppd/plugins/pptp/pptp.c
++++ b/pppd/plugins/pptp/pptp.c
+@@ -47,8 +47,7 @@
+ #include "pathnames.h"
+ 
+ #include "pptp_callmgr.h"
+-#include <net/if.h>
+-#include <linux/if_ether.h>
++#include <linux/if.h>
+ #include <linux/if_pppox.h>
+ 
+ #include <stdio.h>

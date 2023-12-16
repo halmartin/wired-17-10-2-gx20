@@ -1,0 +1,25 @@
+From acad8485a0be5b8dfb1dd90f4bd00728bd243a64 Mon Sep 17 00:00:00 2001
+From: Christian Brauner <christian.brauner@ubuntu.com>
+Date: Sun, 27 Jan 2019 23:05:47 +0100
+Subject: [PATCH] prlimit: remove deprecated and unneeded header
+
+Signed-off-by: Christian Brauner <christian.brauner@ubuntu.com>
+---
+ src/include/prlimit.h | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/src/include/prlimit.h b/src/include/prlimit.h
+index ab19b37a9888..9b91e8b6ccbf 100644
+--- a/src/include/prlimit.h
++++ b/src/include/prlimit.h
+@@ -30,7 +30,6 @@
+ #define _PRLIMIT_H
+ 
+ #include <linux/resource.h>
+-#include <sys/cdefs.h>
+ #include <sys/types.h>
+ 
+ #define RLIM_SAVED_CUR RLIM_INFINITY
+-- 
+2.19.2
+

@@ -1,0 +1,40 @@
+From 9a836e5a3ead21161cce4e3dbbd484d7ad62df49 Mon Sep 17 00:00:00 2001
+From: cjoseph <cjoseph@meraki.com>
+Date:   Wed Dec 9 14:50:02 2015 -0800
+
+    openwrt/busybox: add patch to fix linker error when dmalloc is enabled
+
+    There are linker errors with the busybox-static target when the
+    CONFIG_DMALLOC option is enabled in
+    openwrt/package/busybox/files/config.<platform>, and it boils down to
+    issues with static linking. A proper build can be massaged out by
+    changing the order of the -ldmalloc flag. This patch removes it from
+    the LDLIBS variable (it comes last in the build) and adds it to the
+    EXTRA_LDFLAGS variable (it comes before -static and -static-gcc).
+
+    Dmalloc also depends on pthreads, so pthread is added to LDLIBS.
+
+    Fogbugz: 1279
+    Reviewed-by: pallas
+
+---
+ Makefile.flags | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/Makefile.flags b/Makefile.flags
+index 6f6142c..33d3b32 100644
+--- a/Makefile.flags
++++ b/Makefile.flags
+@@ -165,7 +165,8 @@ LDLIBS += efence
+ endif
+ 
+ ifeq ($(CONFIG_DMALLOC),y)
+-LDLIBS += dmalloc
++LDLIBS += pthread
++EXTRA_LDFLAGS = -ldmalloc
+ endif
+ 
+ # If a flat binary should be built, CFLAGS_busybox="-elf2flt"
+-- 
+2.17.0
+

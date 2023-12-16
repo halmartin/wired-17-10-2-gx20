@@ -1,0 +1,150 @@
+diff --git a/proto/ospf/config.Y b/proto/ospf/config.Y
+index 46b8b238..73471e3a 100644
+--- a/proto/ospf/config.Y
++++ b/proto/ospf/config.Y
+@@ -2,6 +2,7 @@
+  *	BIRD -- OSPF Configuration
+  *
+  *	(c) 1999--2004 Ondrej Filip <feela@network.cz>
++ *	(c) 2014--2017 Cisco Systems, Inc.
+  *
+  *	Can be freely distributed and used under the terms of the GNU GPL.
+  */
+@@ -426,6 +427,9 @@ CF_CLI(SHOW OSPF, optsym, [<name>], [[Show information about OSPF protocol XXX]]
+ CF_CLI(SHOW OSPF NEIGHBORS, optsym opttext, [<name>] [\"<interface>\"], [[Show information about OSPF neighbors]])
+ { ospf_sh_neigh(proto_get_named($4, &proto_ospf), $5); };
+ 
++CF_CLI(EXPORT OSPF NEIGHBORS, optsym opttext, [<name>] [\"<interface>\"] [[Export information about OSPF neighbors in JSON]])
++{ ospf_sh_neigh_json(proto_get_named($4, &proto_ospf), $5); };
++
+ CF_CLI(SHOW OSPF INTERFACE, optsym opttext, [<name>] [\"<interface>\"], [[Show information about interface]])
+ { ospf_sh_iface(proto_get_named($4, &proto_ospf), $5); };
+ 
+diff --git a/proto/ospf/neighbor.c b/proto/ospf/neighbor.c
+index bc274e5f..533c72b3 100644
+--- a/proto/ospf/neighbor.c
++++ b/proto/ospf/neighbor.c
+@@ -4,12 +4,23 @@
+  *	(c) 1999--2004 Ondrej Filip <feela@network.cz>
+  *	(c) 2009--2014 Ondrej Zajicek <santiago@crfreenet.org>
+  *	(c) 2009--2014 CZ.NIC z.s.p.o.
++ *	(c) 2014--2017 Cisco Systems, Inc.
+  *
+  *	Can be freely distributed and used under the terms of the GNU GPL.
+  */
+ 
+ #include "ospf.h"
+ 
++// This should be updated every time ospf_ns is updated.
++char *ospf_ns_json[] = { "down",
++  "attempt",
++  "init",
++  "2way",
++  "exstart",
++  "exchange",
++  "loading",
++  "full"
++};
+ 
+ const char *ospf_ns_names[] = {
+   "Down", "Attempt", "Init", "2-Way", "ExStart", "Exchange", "Loading", "Full"
+@@ -681,3 +692,29 @@ ospf_sh_neigh_info(struct ospf_neighbor *n)
+   cli_msg(-1013, "%-1R\t%3u\t%s/%s\t%-5s\t%-10s %-1I", n->rid, n->priority,
+ 	  ospf_ns_names[n->state], pos, etime, ifa->ifname, n->ip);
+ }
++
++void
++ospf_sh_neigh_info_json(struct ospf_neighbor *n)
++{
++  struct ospf_iface *ifa = n->ifa;
++  char *pos = "other";
++  int exp;
++
++  exp = n->inactim->expires - now;
++  exp = exp > 3600 ? -1 : exp;
++
++  if (n->rid == ifa->drid)
++    pos = "dr";
++  else if (n->rid == ifa->bdrid)
++    pos = "bdr";
++  else if ((n->ifa->type == OSPF_IT_PTP) || (n->ifa->type == OSPF_IT_PTMP) ||
++          (n->ifa->type == OSPF_IT_VLINK))
++    pos = "ptp";
++
++  cli_msg(-1113,
++          "{\"router_id\":%u,\"priority\":%u,\"state\"\:\"%s\","
++          "\"position\":\"%s\",\"expiration_time\":%d,\"vlan\":%u,"
++          "\"ip\":\"%I\"}",
++          n->rid, n->priority, ospf_ns_json[n->state], pos, exp,
++          ifa->iface_id < 4095 ? ifa->iface_id : 0, n->ip);
++}
+diff --git a/proto/ospf/ospf.c b/proto/ospf/ospf.c
+index 0c13387c..1dc48736 100644
+--- a/proto/ospf/ospf.c
++++ b/proto/ospf/ospf.c
+@@ -4,6 +4,7 @@
+  *	(c) 1999--2004 Ondrej Filip <feela@network.cz>
+  *	(c) 2009--2014 Ondrej Zajicek <santiago@crfreenet.org>
+  *	(c) 2009--2014 CZ.NIC z.s.p.o.
++ *	(c) 2014--2017 Cisco Systems, Inc.
+  *
+  *	Can be freely distributed and used under the terms of the GNU GPL.
+  */
+@@ -738,6 +739,34 @@ ospf_sh_neigh(struct proto *P, char *iff)
+   cli_msg(0, "");
+ }
+ 
++void
++ospf_sh_neigh_json(struct proto* p, char *iff)
++{
++  struct ospf_iface *ifa = NULL;
++  struct ospf_neighbor *n;
++  struct ospf_proto *po = (struct ospf_proto *) p;
++
++  cli_msg(-1113, "[");
++  if (p->proto_state == PS_UP)
++  {
++    int first = 1;
++    WALK_LIST(ifa, po->iface_list) {
++      if ((iff == NULL) || patmatch(iff, ifa->ifname)) {
++        WALK_LIST(n, ifa->neigh_list) {
++          if (first) {
++            first = 0;
++          } else {
++            cli_msg(-1113, ",");
++          }
++          ospf_sh_neigh_info_json(n);
++        }
++      }
++    }
++  }
++  cli_msg(-1113, "]");
++  cli_msg(0, "");
++}
++
+ void
+ ospf_sh(struct proto *P)
+ {
+diff --git a/proto/ospf/ospf.h b/proto/ospf/ospf.h
+index 81c610d5..992d4eb5 100644
+--- a/proto/ospf/ospf.h
++++ b/proto/ospf/ospf.h
+@@ -4,6 +4,7 @@
+  *	(c) 1999--2005 Ondrej Filip <feela@network.cz>
+  *	(c) 2009--2014 Ondrej Zajicek <santiago@crfreenet.org>
+  *	(c) 2009--2014 CZ.NIC z.s.p.o.
++ *	(c) 2014--2017 Cisco Systems, Inc.
+  *
+  *	Can be freely distributed and used under the terms of the GNU GPL.
+  */
+@@ -859,6 +860,7 @@ static inline int oa_is_nssa(struct ospf_area *oa)
+ { return oa->options & OPT_N; }
+ 
+ void ospf_sh_neigh(struct proto *P, char *iff);
++void ospf_sh_neigh_json(struct proto *P, char *iff);
+ void ospf_sh(struct proto *P);
+ void ospf_sh_iface(struct proto *P, char *iff);
+ void ospf_sh_state(struct proto *P, int verbose, int reachable);
+-- 
+2.22.0
+

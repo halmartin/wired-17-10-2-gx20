@@ -1,0 +1,18 @@
+diff --git a/proto/meraki/meraki.c b/proto/meraki/meraki.c
+index 7d6e40a9..4922b66f 100644
+--- a/proto/meraki/meraki.c
++++ b/proto/meraki/meraki.c
+@@ -43,6 +43,10 @@ meraki_notify(struct proto *P, rtable *src_table, net *n, rte *new, rte *old, ea
+        n = (net *) fn;
+        rte *e;
+        for(e = n->routes; e; e=e->next) {
++           if (e->net->routes != e) {
++               //route is not "primary", ie it should not forward traffic
++               continue;
++           }
+            ip_ntop(n->n.prefix, ip_buf);
+            if (sscanf(e->attrs->src->proto->name, "peer%u", &peer_num) > 0) {
+                if (0 > fprintf(out,
+-- 
+2.22.0
+

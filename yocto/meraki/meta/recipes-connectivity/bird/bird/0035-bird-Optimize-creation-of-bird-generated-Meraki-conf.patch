@@ -1,0 +1,70 @@
+diff --git a/proto/meraki/meraki.c b/proto/meraki/meraki.c
+index 1addfbcc..bb1ed7c7 100644
+--- a/proto/meraki/meraki.c
++++ b/proto/meraki/meraki.c
+@@ -100,8 +100,22 @@ get_gateway_number(const list *gateway_list, ip_addr gw)
+ }
+ 
+ static void
+-meraki_notify(struct proto *P, rtable *src_table, net *n, rte *new UNUSED, rte *old UNUSED, ea_list *attrs UNUSED)
++meraki_rt_notify(struct proto *P, rtable *src_table UNUSED,
++                 net *n UNUSED, rte *new UNUSED, rte *old UNUSED,
++                 ea_list *attrs UNUSED)
+ {
++   struct meraki_proto *p = (struct meraki_proto *) P;
++   if (!ev_active(p->cf_write_ev)) {
++      log("%s: Event scheduled to regenerate the Meraki route config file.", __func__);
++      ev_schedule(p->cf_write_ev);
++   }
++}
++
++static void
++meraki_write_config(void *vP)
++{
++   struct proto *P = vP;
++   rtable *src_table = P->table;
+    unsigned peer_num, route_count = BIRD_EXPORTED_ROUTE_BEGIN;
+    unsigned gw_count = BIRD_EXPORTED_GATEWAY_BEGIN;
+    char ip_buf[DOTTED_DECIMAL_IPV4_ADDR_LEN], source_key[BGP_SOURCE_KEY_LEN];
+@@ -135,7 +149,7 @@ meraki_notify(struct proto *P, rtable *src_table, net *n, rte *new UNUSED, rte *
+ 
+    FIB_WALK(&src_table->fib, fn)
+    {
+-       n = (net *) fn;
++       net *n = (net *) fn;
+        rte *e;
+        for (e = n->routes; e; e=e->next) {
+            if (e->net->routes != e) {
+@@ -271,11 +285,14 @@ meraki_init(struct proto_config *C)
+ 
+   //these will probably be useful later, but don't worry for now
+   (void)c;
+-  (void)p;
+ 
+-  P->rt_notify = meraki_notify;
++  P->rt_notify = meraki_rt_notify;
+   P->accept_ra_types = RA_OPTIMAL;
+ 
++  p->cf_write_ev = ev_new(p->p.pool);
++  p->cf_write_ev->hook = meraki_write_config;
++  p->cf_write_ev->data = P;
++
+   return P;
+ }
+ 
+diff --git a/proto/meraki/meraki.h b/proto/meraki/meraki.h
+index 4d45e2cb..fd075b15 100644
+--- a/proto/meraki/meraki.h
++++ b/proto/meraki/meraki.h
+@@ -19,6 +19,8 @@ struct meraki_config {
+ 
+ struct meraki_proto {
+   struct proto p;
++  /* Event to handle generation of Meraki route config file on route change */
++  struct event *cf_write_ev;
+ };
+ 
+ extern struct protocol proto_meraki;
+-- 
+2.22.0
+

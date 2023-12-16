@@ -1,0 +1,457 @@
+From a6c1ebcdd455eaee933a3053b33070d5a5310e48 Mon Sep 17 00:00:00 2001
+From: Rohan Shethia <rshethia@meraki.com>
+Date: Thu, 4 Nov 2021 05:15:13 -0700
+Subject: [PATCH] bird2 cli export route state json
+
+This commit adds functionality to bird to support the export of route
+state in json format in order to be used in meraki poder_agent.
+Most of the functionality mirrors the functionality we have added to
+bird 1.6.8 in the past.
+
+The changes made in this patch are as follows:
+  1) Added the new command "export route state table <table_name>" via
+  change in nest/config.Y. Note: This is where all the current commands
+  in bird2 are defined.
+  2) Added meraki-route.c in which the code models itself on rt-show.c
+  except that we make changes in order to extract and export the route
+  state in json format. The call graph for how the command executes is
+  as follows:
+
+  export_route_state_json() [ROOT]
+                |
+                V
+  export_route_state_json_cont() [Iterates over the route table to
+  extract route information]
+                |
+                V
+  export_route_state_json_net() [Iterates over route info and prints it
+  out in json format]
+                |
+                V
+  export_route_state_json_cleanup() [Cleanup]
+
+This commit was tested manually by running the binary with the new
+command. In order to check for correctness, the output was compared to
+the output we have for v4 route state in Bird1.6
+---
+ nest/Makefile       |   2 +-
+ nest/config.Y       |  20 +++
+ nest/meraki-route.c | 312 ++++++++++++++++++++++++++++++++++++++++++++
+ nest/meraki-route.h |  31 +++++
+ 4 files changed, 364 insertions(+), 1 deletion(-)
+ create mode 100644 nest/meraki-route.c
+ create mode 100644 nest/meraki-route.h
+
+diff --git a/nest/Makefile b/nest/Makefile
+index 884d3950..82077511 100644
+--- a/nest/Makefile
++++ b/nest/Makefile
+@@ -1,4 +1,4 @@
+-src := a-path.c a-set.c cli.c cmds.c iface.c locks.c neighbor.c password.c proto.c rt-attr.c rt-dev.c rt-fib.c rt-show.c rt-table.c
++src := a-path.c a-set.c cli.c cmds.c iface.c locks.c neighbor.c password.c proto.c rt-attr.c rt-dev.c rt-fib.c rt-show.c rt-table.c meraki-route.c
+ obj := $(src-o-files)
+ $(all-daemon)
+ $(cf-local)
+diff --git a/nest/config.Y b/nest/config.Y
+index c62501a3..d6f04b7d 100644
+--- a/nest/config.Y
++++ b/nest/config.Y
+@@ -14,6 +14,7 @@ CF_HDR
+ #include "nest/cmds.h"
+ #include "lib/lists.h"
+ #include "lib/mac.h"
++#include "nest/meraki-route.h"
+ 
+ CF_DEFINES
+ 
+@@ -90,6 +91,7 @@ CF_ENUM(T_ENUM_ROA, ROA_, UNKNOWN, VALID, INVALID)
+ %type <r> rtable
+ %type <s> optproto
+ %type <ra> r_args
++%type <ra> ers_args /* export route state args */
+ %type <sd> sym_args
+ %type <i> proto_start echo_mask echo_size debug_mask debug_list debug_flag mrtdump_mask mrtdump_list mrtdump_flag export_mode limit_action net_type table_sorted tos password_algorithm
+ %type <ps> proto_patt proto_patt2
+@@ -521,6 +523,24 @@ CF_CLI(SHOW INTERFACES,,, [[Show network interfaces]])
+ CF_CLI(SHOW INTERFACES SUMMARY,,, [[Show summary of network interfaces]])
+ { if_show_summary(); } ;
+ 
++CF_CLI_HELP(EXPORT ROUTE, ..., [[Export routing table]])
++CF_CLI(EXPORT ROUTE STATE, ers_args, [table <t>], [[Export routing table json]])
++{ export_route_state_json($4); } ;
++
++ers_args:
++   /* empty */ {
++     $$ = cfg_allocz(sizeof(struct rt_show_data));
++     init_list(&($$->tables));
++     $$->running_on_config = new_config->fallback;
++   }
++ | ers_args TABLE CF_SYM_KNOWN {
++     cf_assert_symbol($3, SYM_TABLE);
++     $$ = $1;
++     rt_show_add_table($$, $3->table->table);
++     $$->tables_defined_by = RSD_TDB_DIRECT;
++   }
++ ;
++
+ CF_CLI_HELP(SHOW ROUTE, ..., [[Show routing table]])
+ CF_CLI(SHOW ROUTE, r_args, [[[<prefix>|for <prefix>|for <ip>] [table <t>] [filter <f>|where <cond>] [all] [primary] [filtered] [(export|preexport|noexport) <p>] [protocol <p>] [stats|count]]], [[Show routing table]])
+ { rt_show($3); } ;
+diff --git a/nest/meraki-route.c b/nest/meraki-route.c
+new file mode 100644
+index 00000000..9b496b50
+--- /dev/null
++++ b/nest/meraki-route.c
+@@ -0,0 +1,312 @@
++#undef LOCAL_DEBUG
++
++#include "nest/bird.h"
++#include "nest/route.h"
++#include "nest/protocol.h"
++#include "nest/cli.h"
++#include "nest/iface.h"
++#include "proto/bgp/bgp.h"
++#include "nest/attrs.h"
++#include "nest/meraki-route.h"
++
++/* Use this code as a unique value for the "export route state" command. */
++static const int export_route_state_cli_code = -1107;
++
++/* Similar to rt_show_prepare_tables() */
++static inline void
++export_route_state_json_prepare_tables(struct rt_show_data *d)
++{
++  struct rt_show_data_rtable *tab, *tabx;
++
++  WALK_LIST_DELSAFE(tab, tabx, d->tables)
++  {
++    /* Ensure there is defined export_channel for each table */
++    if (d->export_mode)
++    {
++      if (!tab->export_channel && d->export_channel &&
++          (tab->table == d->export_channel->table))
++        tab->export_channel = d->export_channel;
++
++      if (!tab->export_channel && d->export_protocol)
++        tab->export_channel = proto_find_channel_by_table(d->export_protocol, tab->table);
++
++      if (!tab->export_channel)
++      {
++        if (d->tables_defined_by & RSD_TDB_NMN)
++          cf_error("No export channel for table %s", tab->table->name);
++
++        rem_node(&(tab->n));
++        continue;
++      }
++    }
++
++    /* Ensure specified network is compatible with each table */
++    if (d->addr && (tab->table->addr_type != d->addr->type))
++    {
++      if (d->tables_defined_by & RSD_TDB_NMN)
++        cf_error("Incompatible type of prefix/ip for table %s", tab->table->name);
++
++      rem_node(&(tab->n));
++      continue;
++    }
++  }
++
++  /* Ensure there is at least one table */
++  if (EMPTY_LIST(d->tables))
++    cf_error("No valid tables");
++}
++
++char
++get_bgp_origin_char(const eattr *origin_attr)
++{
++  if (!origin_attr) {
++    log("Route received doesn't have origin attribute.");
++    return '?';
++  }
++  switch (origin_attr->u.data) {
++  case ORIGIN_IGP:
++    return 'i';
++  case ORIGIN_EGP:
++    return 'e';
++  case ORIGIN_INCOMPLETE:
++  default:
++    return '?';
++  }
++}
++
++void
++get_bgp_source_key(rte *e, char* source_key, int len, char bgp_type)
++{
++  struct bgp_proto *p = (struct bgp_proto *) (e->attrs->src->proto);
++  bsnprintf(source_key, len, "BGP:%cBGP:%u:%I", bgp_type, p->remote_as, p->remote_id);
++}
++
++/* Similar to export_route_state_json_net from bird1.6 */
++static void
++export_route_state_json_net(struct cli *c, net *n, struct rt_show_data *d)
++{
++  cli_printf(c, export_route_state_cli_code, "%s{\"prefix\": \"%I\", \"prefix_len\": %u, ",
++             d->net_counter ? "" : ", ", net_prefix(n->n.addr), net_pxlen(n->n.addr));
++
++  cli_printf(c, export_route_state_cli_code, "\"routes\": [ ");
++  rte *e;
++  int first_route = 1;
++  for (e = n->routes; e; e = e->next)
++  {
++    rta *a = e->attrs;
++
++    /* Assume connected until proven otherwise */
++    int connected = 1;
++    ea_list *attrs = a->eattrs;
++    if (attrs)
++    {
++      eattr *meraki_not_conn_attr = ea_find(attrs, EA_MERAKI_NOT_CONN);
++      if (meraki_not_conn_attr)
++      {
++        connected = 0;
++      }
++      eattr *meraki_peer_offline_attr = ea_find(attrs, EA_MERAKI_PEER_OFFLINE);
++      if (meraki_peer_offline_attr)
++      {
++        connected = 0;
++      }
++    }
++
++    int primary = 0;
++    if ((e->net->routes == e) && rte_is_valid(e))
++    {
++      primary = 1;
++    }
++
++    cli_printf(c, export_route_state_cli_code,
++               "%s{"
++               "\"type\": \"%s\", "
++               "\"protocol_name\": \"%s\", "
++               "\"best\": %s, "
++               "\"connected\": %s, ",
++               first_route ? "" : ", ",
++               rta_src_name(a->source),
++               a->src->proto->name,
++               primary ? "true" : "false",
++               connected ? "true" : "false");
++
++    switch (a->source) {
++      /*TODO: Need to tweak this stuff after showing output to rucha and bashar*/
++      case RTS_BGP: {
++        byte as_path[ASPATH_BUF_LEN];
++        char origin;
++        char source_key[BGP_SOURCE_KEY_LEN];
++
++        struct bgp_proto *p = (struct bgp_proto *) (a->src->proto);
++        get_bgp_source_key(e, source_key, sizeof(source_key),
++                           (p->local_as == p->remote_as) ? 'I' : 'E');
++
++        eattr *origin_attr = bgp_find_attr(attrs, BA_ORIGIN);
++        eattr *aspath_attr = bgp_find_attr(attrs, BA_AS_PATH);
++        eattr *nexthop_attr = bgp_find_attr(attrs, BA_NEXT_HOP);
++        eattr *localpref_attr = bgp_find_attr(attrs, BA_LOCAL_PREF);
++        origin = get_bgp_origin_char(origin_attr);
++        as_path_format(aspath_attr->u.ptr, as_path, ASPATH_BUF_LEN);
++
++        /*
++         * Extract the nexthop IP address.
++         * See bgp_format_next_hop() for implementation reference.
++         */
++        ip_addr *ipp = (ip_addr *) nexthop_attr->u.ptr->data;
++        byte nexthop[NEXTHOP_BUF_LEN];
++#ifdef IPV6
++        /* In IPv6, we might have two addresses in NEXT HOP */
++        if ((nexthop_attr->u.ptr->length == NEXT_HOP_LENGTH)
++            && ipa_nonzero(ipp[1])) {
++            bsprintf(nexthop, "[\"%I\", \"%I\"]", ipp[0], ipp[1]);
++        } else {
++            bsprintf(nexthop, "[\"%I\"]", ipp[0]);
++        }
++#else
++        bsprintf(nexthop, "[\"%I\"]", ipp[0]);
++#endif
++        cli_printf(c, export_route_state_cli_code,
++                   "\"source\": \"src_bgp\", "
++                   "\"source_key\": \"%s\", "
++                   "\"bgp_info\": { \"origin\": \"%c\", "
++                   "\"aspath\": \"%s\", "
++                   "\"nexthop\": %s, "
++                   "\"localpref\": %u}, ",
++                   source_key, origin, as_path, nexthop, localpref_attr->u.data);
++        break;
++      }
++      case RTS_OSPF:
++        cli_printf(c, export_route_state_cli_code,
++                   "\"source\": \"src_ospf\", "
++                   "\"source_key\": \"SRC_OSPF\", ");
++        break;
++      default:
++        cli_printf(c, export_route_state_cli_code,
++                   "\"source\": \"src_unknown\", "
++                   "\"source_key\": \"SRC_UNKNOWN\", ");
++        break;
++    }
++
++    cli_printf(c, export_route_state_cli_code, "\"nexthops\": [ ");
++
++    /* Note: Leaving this a switch case so that new cases for RTD_ can be added */
++    switch (a->dest) {
++      /* Note to draw a parallel with bird1.6.8,
++       * RTD_UNITCAST now (bird2.0.7) includes RTD_ROUTER & RTD_DEVICE. Hence when
++       * nexthop is :: (that is empty) it implies RTD_DEVICE and when nexhop
++       * is populated it implies RTD_ROUTER.
++       */
++      case RTD_UNICAST:
++          cli_printf(c, export_route_state_cli_code, "{\"nexthop\": \"%I\", \"interface\": \"%s\"}",
++                     a->nh.gw, a->nh.iface->name);
++          break;
++    }
++    /* close nexthops */
++    cli_printf(c, export_route_state_cli_code, "] }");
++    first_route = 0;
++  }
++
++  /* Close route and prefix */
++  cli_printf(c, export_route_state_cli_code, " ] }");
++  d->net_counter = 0;
++}
++
++/* Similar to rt_show_cleanup() */
++static void
++export_route_state_json_cleanup(struct cli *c)
++{
++  struct rt_show_data *d = c->rover;
++  struct rt_show_data_rtable *tab;
++
++  /* Unlink the iterator */
++  if (d->table_open)
++    fit_get(&d->tab->table->fib, &d->fit);
++
++  /* Unlock referenced tables */
++  WALK_LIST(tab, d->tables)
++    rt_unlock_table(tab->table);
++}
++
++/* Similar to rt_show_cont() */
++static void
++export_route_state_json_cont(struct cli *c)
++{
++  struct rt_show_data *d = c->rover;
++#ifdef DEBUGGING
++  unsigned max = 4;
++#else
++  unsigned max = 64;
++#endif
++  struct fib *fib = &d->tab->table->fib;
++  struct fib_iterator *it = &d->fit;
++
++  if (!d->table_open)
++  {
++    FIB_ITERATE_INIT(&d->fit, &d->tab->table->fib);
++    d->table_open = 1;
++    d->table_counter++;
++
++    d->show_counter_last = d->show_counter;
++    d->rt_counter_last   = d->rt_counter;
++    d->net_counter_last  = d->net_counter;
++  }
++
++  FIB_ITERATE_START(fib, it, net, n)
++  {
++    if (!max--)
++    {
++      FIB_ITERATE_PUT(it);
++      return;
++    }
++    export_route_state_json_net(c, n, d);
++  }
++  FIB_ITERATE_END;
++
++  /* Mark the table as closed after use */
++  d->table_open = 0;
++  d->tab = NODE_NEXT(d->tab);
++
++  if (NODE_VALID(d->tab))
++    return;
++
++  /* Close network opened in export_route_state_json() */
++  cli_printf(c, export_route_state_cli_code, " ] }");
++  cli_printf(c, 0, "");
++
++  export_route_state_json_cleanup(c);
++  c->cont = c->cleanup = NULL;
++}
++
++/* Similar to rt_show() */
++void
++export_route_state_json(struct rt_show_data *d)
++{
++  /* Note: The command is "export route state table master6" for v6 and when
++   * we move v4 to bird2 this will support "export route state table master4"
++   * with no additional change needed.
++   */
++
++  /* Iterator over table list */
++  struct rt_show_data_rtable *tab;
++
++  /* Verify correctness of tables */
++  export_route_state_json_prepare_tables(d);
++
++  /* This will be closed in export_route_state_json_cont() */
++  cli_msg(export_route_state_cli_code, "{ \"networks\": [ ");
++
++  WALK_LIST(tab, d->tables)
++    rt_lock_table(tab->table);
++
++  /*
++   * This counter (used for another purpose in "show route") is used
++   * as a "first_net" flag to guide the hand-crafted JSON output.
++   */
++  d->net_counter = 1;
++
++  /* There is at least one table */
++  d->tab = HEAD(d->tables);
++  this_cli->cont = export_route_state_json_cont;
++  this_cli->cleanup = export_route_state_json_cleanup;
++  this_cli->rover = d;
++}
+diff --git a/nest/meraki-route.h b/nest/meraki-route.h
+new file mode 100644
+index 00000000..8fa034e8
+--- /dev/null
++++ b/nest/meraki-route.h
+@@ -0,0 +1,31 @@
++#ifndef _BIRD_MERAKI_ROUTE_H_
++#define _BIRD_MERAKI_ROUTE_H_
++
++/*
++ * Note that we do not create our own PROTOCOL_MERAKI since that would
++ * require changing nest/protocol.h. We use PROTOCOL_NONE
++ * (euiqvalent to EAP_GENERIC in bird 1.6) and start the id
++ * numbers at 10 to avoid other EA codes under PROTOCOL_NONE, which as of
++ * bird2.0.7 there are none.
++ */
++#define EA_MERAKI_NOT_CONN      EA_CODE(PROTOCOL_NONE, 10)
++#define EA_MERAKI_PEER_OFFLINE  EA_CODE(PROTOCOL_NONE, 11)
++
++#define ASPATH_BUF_LEN 512
++// Accommodate worst-case nexthop size
++#define NEXTHOP_BUF_LEN sizeof("[\"xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx\", "\
++                               "\"xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx\"]")
++// Accommodate worst case bgp source_key size
++#define BGP_SOURCE_KEY_LEN sizeof("BGP:xBGP:4294967295:xxx.xxx.xxx.xxx")
++
++char get_bgp_origin_char(const eattr *origin_attr);
++void get_bgp_source_key(rte *e, char* source_key, int len, char bgp_type);
++void export_route_state_json(struct rt_show_data *d);
++
++/* Using existing bird data structure to extract route source */
++const char * rta_src_names[RTS_MAX];
++
++static inline const char *rta_src_name(uint n)
++{ return (n < RTS_MAX) ? rta_src_names[n] : "???"; }
++
++#endif
+-- 
+2.32.0
+

@@ -1,0 +1,12 @@
+Index: git/CMakeLists.txt
+===================================================================
+--- git.orig/CMakeLists.txt
++++ git/CMakeLists.txt
+@@ -25,6 +25,7 @@
+ INCLUDE_DIRECTORIES(${ubox_include_dir})
+
+ ADD_LIBRARY(ubus SHARED libubus.c libubus-io.c libubus-obj.c libubus-sub.c libubus-req.c libubus-acl.c)
++SET_TARGET_PROPERTIES(ubus PROPERTIES VERSION 1.0.0 SOVERSION 1)
+ TARGET_LINK_LIBRARIES(ubus ${ubox_library})
+
+ find_library(json NAMES json-c json)

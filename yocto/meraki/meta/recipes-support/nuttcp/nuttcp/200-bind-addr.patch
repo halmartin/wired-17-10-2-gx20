@@ -1,0 +1,80 @@
+Index: 7.2.1-r0/nuttcp-7.2.1.c
+===================================================================
+--- 7.2.1-r0.orig/nuttcp-7.2.1.c	2018-01-22 15:39:29.726166896 -0800
++++ 7.2.1-r0/nuttcp-7.2.1.c	2018-01-22 15:40:26.134105583 -0800
+@@ -983,6 +983,7 @@
+ char host3addr[ADDRSTRLEN];	/* buffer to hold text of 3rd party address */
+ char host3buf[HOST3BUFLEN + 1];	/* buffer to hold 3rd party name or address */
+ char clientbuf[NI_MAXHOST];	/* buffer to hold client's resolved hostname */
++struct sockaddr bind_addr;
+ int trans = 1;			/* 0=receive, !0=transmit mode */
+ int sinkmode = 1;		/* 0=normal I/O, !0=sink/source mode */
+ #if defined(linux)
+@@ -1158,6 +1159,7 @@
+ "	--disable-v4-mapped disable v4 mapping in v6 server (default)\n"
+ "	--enable-v4-mapped enable v4 mapping in v6 server\n"
+ #endif
++"	--bind-addr <address> ip address to bind socket to\n"
+ "\n\
+ Usage (server): nuttcp -S[P] [-options]\n\
+ 		note server mode excludes use of -s except for -1 one-shot mode\n\
+@@ -1191,6 +1193,7 @@
+ "	--disable-v4-mapped disable v4 mapping in v6 server (default)\n"
+ "	--enable-v4-mapped enable v4 mapping in v6 server\n"
+ #endif
++"	--bind-addr <address> ip address to bind socket to\n"
+ "\n\
+ Multilink aggregation options (TCP only):\n\
+ 	 nuttcp [-options] -N##  [ctl_addr]/host1/host2/.../host## (xmit only)\n\
+@@ -1761,6 +1764,7 @@
+ 	rcvwin = 0;
+ 	srvrwin = -1;
+ 	format |= WANTRTT;
++	bind_addr.sa_family = AF_UNSPEC;
+ 
+ 	if (argc < 2) goto usage;
+ 
+@@ -2454,6 +2458,26 @@
+ 				v4mapped=1;
+ 			}
+ #endif
++			else if (strcmp(&argv[0][2], "bind-addr") == 0 && argc > 1) {
++
++				bzero((char *)&bind_addr, sizeof(bind_addr));
++				bind_addr.sa_family = AF_INET;
++				int s = inet_pton(AF_INET, argv[1], bind_addr.sa_data);
++#ifdef AF_INET6
++				if (s <= 0) {
++					bind_addr.sa_family = AF_INET6;
++					s = inet_pton(AF_INET6, argv[1], bind_addr.sa_data);
++				}
++#endif
++				if (s <= 0) {
++					fprintf(stderr, "invalid ip address %s\n", argv[1]);
++					fflush(stderr);
++					exit(1);
++				}
++
++				argv++;
++				argc--;
++			}
+ 			else {
+ 				goto usage;
+ 			}
+@@ -4521,6 +4545,16 @@
+ 		bzero((char *)&sinhim6[stream_idx], sizeof(sinhim6[stream_idx]));
+ #endif
+ 
++		if (bind_addr.sa_family == AF_INET) {
++			sinme[stream_idx].sin_addr.s_addr = ((struct in_addr *) bind_addr.sa_data)->s_addr;
++		}
++#ifdef AF_INET6
++		else if (bind_addr.sa_family == AF_INET6) {
++			memcpy(sinme6[stream_idx].sin6_addr.s6_addr, ((struct in6_addr *) bind_addr.sa_data)->s6_addr,
++				sizeof(sinme6[stream_idx].sin6_addr.s6_addr));
++		}
++#endif
++
+ 		if (((trans && !reverse) && (stream_idx > 0)) ||
+ 		    ((!trans && reverse) && (stream_idx > 0)) ||
+ 		    (client && (stream_idx == 0))) {

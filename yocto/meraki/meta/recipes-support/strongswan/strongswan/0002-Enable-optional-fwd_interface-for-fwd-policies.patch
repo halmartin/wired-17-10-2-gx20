@@ -1,0 +1,253 @@
+From cf378a016ce1adf4b908b799f758278fda169020 Mon Sep 17 00:00:00 2001
+From: Jerry Xu <jerxu@meraki.com>
+Date: Fri, 14 Jan 2022 12:58:22 -0800
+Subject: [PATCH] Enable-optional-fwd_interface-for-fwd-policies
+
+The current implementation as provided by strongSwan, allows the user to
+add an interface option but is applied only to outboud ip xfrm policies.
+This does not pose to be a problem when interfaces for IPsec traffic are
+the same. However, in the case of MX, we use 'ipsec_vpn' interface for
+IPsec traffic not destined for the MX itself and 'ipsec_encap' interface
+for outbound IPsec traffic originating on the MX.
+
+Having separate interfaces for IPsec traffic was not a problem while
+running racoon, since the 'ip xfrm polices' were configured manually via
+wired_brain, which had knowledge of the different interfaces.
+In strongSwan this is no longer possible as strongSwan inserts the xfrm
+policies for us. Its limited ability to only configure interfaces for
+outbound policies causes the MX to reject packets based on a mismatch
+between the installed policy and the installed security association.
+This is the root cause for the issue described in JIRA MX-6452.
+
+This commit extends strongSwan's ability to configure an interface not
+only for outbound ('out') policies but also for forward ('fwd') policies
+that's installed in the kernel. In addition to extending the
+configuration for strongSwan, this commit also sets the 'interface' and
+the new, 'fwd_interface' configuration options in the swanctl.conf that
+is generated for MX so as to aid strongSwan in applying the interfaces
+correctly to the traffic selectors in the xfrm policies on insertion.
+---
+ src/libcharon/config/child_cfg.c         | 17 ++++++++++++++++-
+ src/libcharon/config/child_cfg.h         |  9 +++++++++
+ src/libcharon/plugins/vici/vici_config.c |  3 +++
+ src/libcharon/plugins/vici/vici_query.c  |  8 +++++++-
+ src/libcharon/sa/child_sa.c              |  3 +++
+ src/swanctl/commands/list_conns.c        |  8 +++++++-
+ src/swanctl/swanctl.opt                  |  3 +++
+ 7 files changed, 48 insertions(+), 3 deletions(-)
+
+diff --git a/src/libcharon/config/child_cfg.c b/src/libcharon/config/child_cfg.c
+index d4fb37c..aa7ae5e 100644
+--- a/src/libcharon/config/child_cfg.c
++++ b/src/libcharon/config/child_cfg.c
+@@ -158,6 +158,11 @@ struct private_child_cfg_t {
+ 	 */
+ 	char *interface;
+ 
++	/**
++	 * Optional restriction of IPsec fwd policy to a given network interface
++	*/
++	char *fwd_interface;
++
+ 	/**
+ 	 * anti-replay window size
+ 	 */
+@@ -540,6 +545,12 @@ METHOD(child_cfg_t, get_interface, char*,
+ 	return this->interface;
+ }
+ 
++METHOD(child_cfg_t, get_fwd_interface, char*,
++	private_child_cfg_t *this)
++{
++	return this->fwd_interface;
++}
++
+ METHOD(child_cfg_t, get_replay_window, uint32_t,
+ 	private_child_cfg_t *this)
+ {
+@@ -607,7 +618,8 @@ METHOD(child_cfg_t, equals, bool,
+ 		this->hw_offload == other->hw_offload &&
+ 		this->copy_dscp == other->copy_dscp &&
+ 		streq(this->updown, other->updown) &&
+-		streq(this->interface, other->interface);
++		streq(this->interface, other->interface) &&
++		streq(this->fwd_interface, other->fwd_interface);
+ }
+ 
+ METHOD(child_cfg_t, get_ref, child_cfg_t*,
+@@ -627,6 +639,7 @@ METHOD(child_cfg_t, destroy, void,
+ 		this->other_ts->destroy_offset(this->other_ts, offsetof(traffic_selector_t, destroy));
+ 		free(this->updown);
+ 		free(this->interface);
++		free(this->fwd_interface);
+ 		free(this->name);
+ 		free(this);
+ 	}
+@@ -662,6 +675,7 @@ child_cfg_t *child_cfg_create(char *name, child_cfg_create_t *data)
+ 			.get_tfc = _get_tfc,
+ 			.get_manual_prio = _get_manual_prio,
+ 			.get_interface = _get_interface,
++			.get_fwd_interface = _get_fwd_interface,
+ 			.get_replay_window = _get_replay_window,
+ 			.set_replay_window = _set_replay_window,
+ 			.has_option = _has_option,
+@@ -690,6 +704,7 @@ child_cfg_t *child_cfg_create(char *name, child_cfg_create_t *data)
+ 		.tfc = data->tfc,
+ 		.manual_prio = data->priority,
+ 		.interface = strdupnull(data->interface),
++		.fwd_interface = strdupnull(data->fwd_interface),
+ 		.refcount = 1,
+ 		.proposals = linked_list_create(),
+ 		.my_ts = linked_list_create(),
+diff --git a/src/libcharon/config/child_cfg.h b/src/libcharon/config/child_cfg.h
+index b176d67..c2340e8 100644
+--- a/src/libcharon/config/child_cfg.h
++++ b/src/libcharon/config/child_cfg.h
+@@ -268,6 +268,13 @@ struct child_cfg_t {
+ 	 */
+ 	char* (*get_interface)(child_cfg_t *this);
+ 
++	/**
++	 * Get optional network interface restricting IPsec fwd policy
++	 *
++	 * @return              network interface)
++	*/
++	char* (*get_fwd_interface)(child_cfg_t *this);
++
+ 	/**
+ 	 * Get anti-replay window size
+ 	 *
+@@ -375,6 +382,8 @@ struct child_cfg_create_t {
+ 	uint32_t priority;
+ 	/** Optional network interface restricting IPsec policy (cloned) */
+ 	char *interface;
++	/** Optional network interface restricting IPsec fwd policy (cloned) */
++	char *fwd_interface;
+ 	/** lifetime_cfg_t for this child_cfg */
+ 	lifetime_cfg_t lifetime;
+ 	/** Inactivity timeout in s before closing a CHILD_SA */
+diff --git a/src/libcharon/plugins/vici/vici_config.c b/src/libcharon/plugins/vici/vici_config.c
+index 4659f8f..cba4813 100644
+--- a/src/libcharon/plugins/vici/vici_config.c
++++ b/src/libcharon/plugins/vici/vici_config.c
+@@ -552,6 +552,7 @@ static void log_child_data(child_data_t *data, char *name)
+ 	DBG2(DBG_CFG, "   tfc = %d", cfg->tfc);
+ 	DBG2(DBG_CFG, "   priority = %d", cfg->priority);
+ 	DBG2(DBG_CFG, "   interface = %s", cfg->interface);
++	DBG2(DBG_CFG, "   fwd_interface = %s", cfg->fwd_interface);
+ 	DBG2(DBG_CFG, "   if_id_in = %u", cfg->if_id_in);
+ 	DBG2(DBG_CFG, "   if_id_out = %u", cfg->if_id_out);
+ 	DBG2(DBG_CFG, "   mark_in = %u/%u",
+@@ -587,6 +588,7 @@ static void free_child_data(child_data_t *data)
+ 									offsetof(traffic_selector_t, destroy));
+ 	free(data->cfg.updown);
+ 	free(data->cfg.interface);
++	free(data->cfg.fwd_interface);
+ }
+ 
+ /**
+@@ -1753,6 +1755,7 @@ CALLBACK(child_kv, bool,
+ 		{ "tfc_padding",		parse_tfc,			&child->cfg.tfc						},
+ 		{ "priority",			parse_uint32,		&child->cfg.priority				},
+ 		{ "interface",			parse_string,		&child->cfg.interface				},
++		{ "fwd_interface",		parse_string,		&child->cfg.fwd_interface			},
+ 		{ "hw_offload",			parse_hw_offload,	&child->cfg.hw_offload				},
+ 		{ "sha256_96",			parse_opt_sha256_96,&child->cfg.options					},
+ 		{ "copy_df",			parse_opt_copy_df,	&child->cfg.options					},
+diff --git a/src/libcharon/plugins/vici/vici_query.c b/src/libcharon/plugins/vici/vici_query.c
+index fb65b14..788411d 100644
+--- a/src/libcharon/plugins/vici/vici_query.c
++++ b/src/libcharon/plugins/vici/vici_query.c
+@@ -844,7 +844,7 @@ CALLBACK(list_conns, vici_message_t*,
+ 	peer_cfg_t *peer_cfg;
+ 	ike_cfg_t *ike_cfg;
+ 	child_cfg_t *child_cfg;
+-	char *ike, *str, *interface;
++	char *ike, *str, *interface, *fwd_interface;
+ 	uint32_t manual_prio, dpd_delay, dpd_timeout;
+ 	identification_t *ppk_id;
+ 	linked_list_t *list;
+@@ -972,6 +972,12 @@ CALLBACK(list_conns, vici_message_t*,
+ 				b->add_kv(b, "interface", "%s", interface);
+ 			}
+ 
++			fwd_interface = child_cfg->get_fwd_interface(child_cfg);
++			if (fwd_interface)
++			{
++				b->add_kv(b, "fwd_interface", "%s", fwd_interface);
++			}
++
+ 			manual_prio = child_cfg->get_manual_prio(child_cfg);
+ 			if (manual_prio)
+ 			{
+diff --git a/src/libcharon/sa/child_sa.c b/src/libcharon/sa/child_sa.c
+index 9b06ebc..c4bbed6 100644
+--- a/src/libcharon/sa/child_sa.c
++++ b/src/libcharon/sa/child_sa.c
+@@ -648,6 +648,7 @@ static bool update_usetime(private_child_sa_t *this, bool inbound)
+ 			if (this->mode != MODE_TRANSPORT)
+ 			{
+ 				id.dir = POLICY_FWD;
++				id.interface = this->config->get_fwd_interface(this->config);
+ 				if (charon->kernel->query_policy(charon->kernel, &id, &query,
+ 												 &fwd) == SUCCESS)
+ 				{
+@@ -1031,6 +1032,7 @@ static status_t install_policies_inbound(private_child_sa_t *this,
+ 	if (this->mode != MODE_TRANSPORT)
+ 	{
+ 		in_id.dir = POLICY_FWD;
++		in_id.interface = this->config->get_fwd_interface(this->config);
+ 		status |= charon->kernel->add_policy(charon->kernel, &in_id, &in_policy);
+ 	}
+ 	return status;
+@@ -1140,6 +1142,7 @@ static void del_policies_inbound(private_child_sa_t *this,
+ 	if (this->mode != MODE_TRANSPORT)
+ 	{
+ 		in_id.dir = POLICY_FWD;
++		in_id.interface = this->config->get_fwd_interface(this->config);
+ 		charon->kernel->del_policy(charon->kernel, &in_id, &in_policy);
+ 	}
+ }
+diff --git a/src/swanctl/commands/list_conns.c b/src/swanctl/commands/list_conns.c
+index f00fb54..3e1bb35 100644
+--- a/src/swanctl/commands/list_conns.c
++++ b/src/swanctl/commands/list_conns.c
+@@ -83,7 +83,7 @@ CALLBACK(children_sn, int,
+ 	hashtable_t *ike, vici_res_t *res, char *name)
+ {
+ 	hashtable_t *child;
+-	char *mode, *interface, *priority;
++	char *mode, *interface, *fwd_interface, *priority;
+ 	char *rekey_time, *rekey_bytes, *rekey_packets, *dpd_action, *dpd_delay;
+ 	bool no_time, no_bytes, no_packets, no_dpd, or = FALSE;
+ 	int ret;
+@@ -144,6 +144,12 @@ CALLBACK(children_sn, int,
+ 			printf("    interface: %s\n", interface);
+ 		}
+ 
++		fwd_interface = child->get(child, "fwd_interface");
++		if (fwd_interface)
++		{
++			printf("    fwd_interface: %s\n", fwd_interface);
++		}
++
+ 		priority = child->get(child, "priority");
+ 		if (priority)
+ 		{
+diff --git a/src/swanctl/swanctl.opt b/src/swanctl/swanctl.opt
+index 0ae9d45..48bedea 100644
+--- a/src/swanctl/swanctl.opt
++++ b/src/swanctl/swanctl.opt
+@@ -921,6 +921,9 @@ connections.<conn>.children.<child>.priority = 0
+ connections.<conn>.children.<child>.interface =
+ 	Optional interface name to restrict IPsec policies.
+ 
++connections.<conn>.children.<child>.fwd_interface =
++	Optional interface name to restrict IPsec fwd policies.
++
+ connections.<conn>.children.<child>.mark_in = 0/0x00000000
+ 	Netfilter mark and mask for input traffic.
+ 
+-- 
+2.34.1
+

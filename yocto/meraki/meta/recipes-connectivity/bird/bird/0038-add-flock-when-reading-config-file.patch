@@ -1,0 +1,41 @@
+diff --git a/sysdep/unix/main.c b/sysdep/unix/main.c
+index 01c0dedb..52b85913 100644
+--- a/sysdep/unix/main.c
++++ b/sysdep/unix/main.c
+@@ -20,6 +20,7 @@
+ #include <pwd.h>
+ #include <grp.h>
+ #include <sys/stat.h>
++#include <sys/file.h>
+ #include <libgen.h>
+ 
+ #include "nest/bird.h"
+@@ -194,6 +195,13 @@ sysdep_commit(struct config *new, struct config *old UNUSED)
+ static int
+ unix_read_config(struct config **cp, char *name)
+ {
++  // MX-16604: Use flock before reading as wired_brain could be writing
++  // the config file. See configure_bird() in meraki_bird.cc for how
++  // wired_brain uses flock on bird.conf
++  int lock_fd = open("/etc/bird/bird.conf", O_RDONLY);
++  if (flock(lock_fd, LOCK_EX) == -1)
++    debug("request flock failed on /etc/bird/bird.conf, fd: %d", lock_fd);
++
+   struct config *conf = config_alloc(name);
+   int ret;
+ 
+@@ -203,6 +211,11 @@ unix_read_config(struct config **cp, char *name)
+     return 0;
+   cf_read_hook = cf_read;
+   ret = config_parse(conf);
++
++  // Release flock
++  if (flock(lock_fd, LOCK_UN) == -1)
++    debug("release flock failed on /etc/bird/bird.conf, fd: %d", lock_fd);
++
+   close(conf->file_fd);
+   return ret;
+ }
+-- 
+2.37.0
+

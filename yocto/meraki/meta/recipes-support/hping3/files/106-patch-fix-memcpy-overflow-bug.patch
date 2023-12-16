@@ -1,0 +1,27 @@
+From dff39621f7e9a9a08e4db7d3b0dae5fbcf770ae6 Mon Sep 17 00:00:00 2001
+From: Tania <taniat@meraki.com>
+Date: Wed, 2 Dec 2020 19:30:52 -0800
+Subject: [PATCH] [patch] fix memcpy overflow bug
+
+The code was using the size of a different variable to copy into icmp,
+causing an overflow. This fixes it to use the size of icmp.
+---
+ scan.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/scan.c b/scan.c
+index 3be3e28..8ba5694 100644
+--- a/scan.c
++++ b/scan.c
+@@ -456,7 +456,7 @@ static void receiver(struct portinfo *pi, int childpid)
+ 				continue;
+ 			/* time to copy headers in a safe place */
+ 			p = packet+linkhdr_size+iphdrlen;
+-			memcpy(&icmp, p, sizeof(subtcp));
++			memcpy(&icmp, p, sizeof(icmp));
+ 			p += sizeof(icmp);
+ 			memcpy(&subip, p, sizeof(ip));
+ 			p += sizeof(ip);
+-- 
+2.29.0
+

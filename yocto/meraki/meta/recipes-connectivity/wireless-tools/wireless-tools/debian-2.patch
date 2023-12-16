@@ -1,0 +1,39 @@
+Index: wireless_tools.30/iwlib.c
+===================================================================
+--- wireless_tools.30.orig/iwlib.c	2018-01-22 19:45:04.910341233 -0800
++++ wireless_tools.30/iwlib.c	2018-01-22 19:45:04.906341237 -0800
+@@ -676,6 +676,7 @@
+ {
+   struct iwreq		wrq;
+ 
++  memset((char *) &wrq, 0, sizeof(struct iwreq));
+   memset((char *) info, 0, sizeof(struct wireless_config));
+ 
+   /* Get wireless name */
+Index: wireless_tools.30/Makefile
+===================================================================
+--- wireless_tools.30.orig/Makefile	2018-01-22 19:45:04.910341233 -0800
++++ wireless_tools.30/Makefile	2018-01-22 19:45:44.774296930 -0800
+@@ -75,8 +75,8 @@
+ # Install directories
+ INSTALL_DIR= $(PREFIX)/sbin
+ INSTALL_LIB= $(PREFIX)/lib
+-INSTALL_INC= $(PREFIX)/include
+-INSTALL_MAN= $(PREFIX)/share/man
++INSTALL_INC= $(PREFIX)/usr/include
++INSTALL_MAN= $(PREFIX)/usr/share/man
+ 
+ # Various commands
+ RM = rm -f
+@@ -104,9 +104,9 @@
+ endif
+ 
+ # Other flags
+-CFLAGS=-Os -W -Wall -Wstrict-prototypes -Wmissing-prototypes -Wshadow \
++#CFLAGS=-Os -W -Wall -Wstrict-prototypes -Wmissing-prototypes -Wshadow \
+ 	-Wpointer-arith -Wcast-qual -Winline -I.
+-#CFLAGS=-O2 -W -Wall -Wstrict-prototypes -I.
++CFLAGS=-O2 -W -Wall -Wstrict-prototypes -I.
+ DEPFLAGS=-MMD
+ XCFLAGS=$(CFLAGS) $(DEPFLAGS) $(WARN) $(HEADERS) $(WELIB_FLAG) $(WEDEF_FLAG)
+ PICFLAG=-fPIC

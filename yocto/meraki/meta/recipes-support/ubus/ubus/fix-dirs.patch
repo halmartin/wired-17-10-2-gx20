@@ -1,0 +1,19 @@
+Index: git/CMakeLists.txt
+===================================================================
+--- git.orig/CMakeLists.txt
++++ git/CMakeLists.txt
+@@ -40,11 +40,11 @@
+ ADD_SUBDIRECTORY(examples)
+
+ INSTALL(TARGETS ubus cli
+-	LIBRARY DESTINATION lib
+-	RUNTIME DESTINATION bin
++    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
++    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+ )
+ INSTALL(TARGETS ubusd
+-	RUNTIME DESTINATION sbin
++    RUNTIME DESTINATION ${CMAKE_INSTALL_SBINDIR}
+ )
+
+ INSTALL(FILES ubusmsg.h ubus_common.h libubus.h DESTINATION include)

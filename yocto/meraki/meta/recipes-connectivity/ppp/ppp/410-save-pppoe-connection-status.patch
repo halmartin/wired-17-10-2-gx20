@@ -1,0 +1,76 @@
+From 5ec032d9da81173defeb0904fc0def2e6a7eb258 Mon Sep 17 00:00:00 2001
+From: whauser <whauser@meraki.com>
+Date: Mon, 11 Oct 2021 07:23:58 -0700
+Subject: pppd: save pppoe connection status
+
+---
+ pppd/plugins/rp-pppoe/plugin.c | 25 +++++++++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+diff --git a/pppd/plugins/rp-pppoe/plugin.c b/pppd/plugins/rp-pppoe/plugin.c
+index 4d4e5a3..326615f 100644
+--- a/pppd/plugins/rp-pppoe/plugin.c
++++ b/pppd/plugins/rp-pppoe/plugin.c
+@@ -65,6 +65,7 @@ static char *existingSession = NULL;
+ static int printACNames = 0;
+ static char *pppoe_reqd_mac = NULL;
+ unsigned char pppoe_reqd_mac_addr[6];
++static char *statusFilePath = NULL;
+ static char *host_uniq;
+ static int pppoe_padi_timeout = PADI_TIMEOUT;
+ static int pppoe_padi_attempts = MAX_PADI_ATTEMPTS;
+@@ -85,6 +86,8 @@ static option_t Options[] = {
+       "Be verbose about discovered access concentrators"},
+     { "pppoe-mac", o_string, &pppoe_reqd_mac,
+       "Only connect to specified MAC address" },
++    { "rp_pppoe_status_file", o_string, &statusFilePath,
++      "Save connection status in the specified file" },
+     { "host-uniq", o_string, &host_uniq,
+       "Set the Host-Uniq to the supplied hex string" },
+     { "pppoe-padi-timeout", o_int, &pppoe_padi_timeout,
+@@ -112,6 +115,9 @@ PPPOEInitDevice(void)
+     if (!conn) {
+ 	novm("PPPoE session data");
+     }
++    if (statusFilePath) {
++	unlink(statusFilePath);
++    }
+     memset(conn, 0, sizeof(PPPoEConnection));
+     conn->ifName = devnam;
+     conn->discoverySocket = -1;
+@@ -243,6 +249,21 @@ PPPOEConnectDevice(void)
+ 	goto errout;
+     }
+ 
++    if (statusFilePath) {
++        FILE *file = fopen(statusFilePath, "w");
++        if (file) {
++            fprintf(file, "PEER-ETH-ADDRESS=%02X:%02X:%02X:%02X:%02X:%02X\n",
++                    (unsigned) conn->peerEth[0],
++                    (unsigned) conn->peerEth[1],
++                    (unsigned) conn->peerEth[2],
++                    (unsigned) conn->peerEth[3],
++                    (unsigned) conn->peerEth[4],
++                    (unsigned) conn->peerEth[5]);
++            fprintf(file, "SESSION=%u\n", ntohs(conn->session));
++            fclose(file);
++        }
++    }
++
+     return conn->sessionSocket;
+ 
+  errout:
+@@ -294,6 +315,10 @@ PPPOEDisconnectDevice(void)
+         sendPADT(conn, NULL);
+ 	close(conn->discoverySocket);
+     }
++
++    if (statusFilePath) {
++        unlink(statusFilePath);
++    }
+ }
+ 
+ static void
+-- 
+2.32.0
+

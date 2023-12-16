@@ -1,0 +1,65 @@
+From 4fe02b6b2afcc788462900d02a1b105e79723b46 Mon Sep 17 00:00:00 2001
+From: cliff <cliff@meraki.com>
+Date: Thu, 29 Aug 2013 00:19:58 +0000
+Subject: [PATCH]     busybox/grep: add -u for line-buffered output
+
+    This will be used by an evhttpd handler that I'm about to add.
+
+    You should probably run
+      rm -rf openwrt/build_*/busybox* openwrt/boardconfig-*
+    to make future builds happier.
+
+    Reviewed-by: jbicket@meraki.com
+---
+ findutils/grep.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/findutils/grep.c b/findutils/grep.c
+index 55e9c0a8f..63fa7925a 100644
+--- a/findutils/grep.c
++++ b/findutils/grep.c
+@@ -83,6 +83,7 @@
+ //usage:     "\n	-w	Match whole words only"
+ //usage:     "\n	-x	Match whole lines only"
+ //usage:     "\n	-F	PATTERN is a literal (not regexp)"
++//usage:     "\n	-u	Use line buffered output"
+ //usage:     "\n	-E	PATTERN is an extended regexp"
+ //usage:	IF_EXTRA_COMPAT(
+ //usage:     "\n	-z	Input is NUL terminated"
+@@ -109,7 +110,7 @@
+ 
+ /* -e,-f are lists; -m,-A,-B,-C have numeric param */
+ #define OPTSTR_GREP \
+-	"lnqvscFiHhe:*f:*LorRm:+wx" \
++	"lnqvscFiuHhe:*f:*LorRm:+wx" \
+ 	IF_FEATURE_GREP_CONTEXT("A:+B:+C:+") \
+ 	"E" \
+ 	IF_EXTRA_COMPAT("z") \
+@@ -125,6 +126,7 @@ enum {
+ 	OPTBIT_c, /* count matches per file (suppresses normal output) */
+ 	OPTBIT_F, /* literal match */
+ 	OPTBIT_i, /* case-insensitive */
++	OPTBIT_u, /* line buffered output */
+ 	OPTBIT_H, /* force filename display */
+ 	OPTBIT_h, /* inhibit filename display */
+ 	OPTBIT_e, /* -e PATTERN */
+@@ -149,6 +151,7 @@ enum {
+ 	OPT_c = 1 << OPTBIT_c,
+ 	OPT_F = 1 << OPTBIT_F,
+ 	OPT_i = 1 << OPTBIT_i,
++	OPT_u = 1 << OPTBIT_u,
+ 	OPT_H = 1 << OPTBIT_H,
+ 	OPT_h = 1 << OPTBIT_h,
+ 	OPT_e = 1 << OPTBIT_e,
+@@ -759,6 +762,8 @@ int grep_main(int argc UNUSED_PARAM, char **argv)
+ 	getopt32(argv, "^" OPTSTR_GREP "\0" "H-h:c-n:q-n:l-n:", // why trailing ":"?
+ 		&pattern_head, &fopt, &max_matches);
+ #endif
++	if ((option_mask32 & OPT_u) != 0)
++		setlinebuf(stdout);
+ 	invert_search = ((option_mask32 & OPT_v) != 0); /* 0 | 1 */
+ 
+ 	{	/* convert char **argv to pattern_list */
+-- 
+2.22.0
+

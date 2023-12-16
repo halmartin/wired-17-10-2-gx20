@@ -1,0 +1,168 @@
+diff --git a/proto/meraki/config.Y b/proto/meraki/config.Y
+index d3f2b1cc..2394ac94 100644
+--- a/proto/meraki/config.Y
++++ b/proto/meraki/config.Y
+@@ -8,7 +8,7 @@ CF_DEFINES
+ 
+ CF_DECLS
+ 
+-CF_KEYWORDS(MERAKI, OUTFILE)
++CF_KEYWORDS(MERAKI, EBGP_PEERS)
+ 
+ CF_GRAMMAR
+ 
+@@ -16,14 +16,36 @@ CF_ADDTO(proto, meraki_proto '}')
+ 
+ meraki_proto_start: proto_start MERAKI {
+      this_proto = proto_config_new(&proto_meraki, $1);
++     init_list(&MERAKI_CFG->ebgp_peer_list);
+   }
+  ;
+ 
+ meraki_proto:
+    meraki_proto_start proto_name '{'
+- | meraki_proto proto_item ';'
++ | meraki_proto meraki_proto_item ';'
+  ;
+ 
++meraki_proto_item:
++   proto_item
++ | EBGP_PEERS '{' meraki_ebgp_peer_list '}'
++ ;
++
++meraki_ebgp_peer_list:
++ /* empty */
++ | meraki_ebgp_peer_list meraki_ebgp_peer_item
++ ;
++
++meraki_ebgp_peer_item: meraki_ebgp_peer_base ';' ;
++
++meraki_ebgp_peer_base: ipa
++ {
++   struct meraki_ebgp_peer_config *peer =
++       cfg_allocz(sizeof(struct meraki_ebgp_peer_config));
++   add_tail(&MERAKI_CFG->ebgp_peer_list, NODE peer);
++   peer->addr = $1;
++ }
++;
++
+ CF_CODE
+ 
+ CF_END
+diff --git a/proto/meraki/meraki.c b/proto/meraki/meraki.c
+index f2ccbc6a..43735c7e 100644
+--- a/proto/meraki/meraki.c
++++ b/proto/meraki/meraki.c
+@@ -115,6 +115,20 @@ get_bgp_source_key(rte *e, char* source_key, int len, char bgp_type)
+     bsnprintf(source_key, len, "BGP:%cBGP:%u:%I", bgp_type, p->remote_as, p->remote_id);
+ }
+ 
++static int
++is_ebgp_peer(const list *ebgp_peer_list, ip_addr gw)
++{
++    const struct meraki_ebgp_peer_config *e;
++
++    WALK_LIST(e, *ebgp_peer_list) {
++        if (e->addr == gw) {
++            return 1;
++        }
++    }
++
++    return 0;
++}
++
+ static void
+ meraki_notify(struct proto *P, rtable *src_table, net *n, rte *new UNUSED, rte *old UNUSED, ea_list *attrs UNUSED)
+ {
+@@ -184,24 +198,33 @@ meraki_notify(struct proto *P, rtable *src_table, net *n, rte *new UNUSED, rte *
+                route_count++;
+                is_bgp_route = 1;
+            } else if (sscanf(e->attrs->src->proto->name, "neighbor%u", &peer_num) > 0) {
+-               // Find or create a gateway
+-               struct meraki_gw *mgw = meraki_gw_find(&meraki_gw_list, e->attrs->gw);
+-               if (mgw == NULL) {
+-                   char gw_buf[STD_ADDRESS_P_LENGTH];
+-
+-                   // A new gateway to configure.
+-                   mgw = meraki_gw_create(P, e->attrs->gw, gw_count);
+-                   meraki_gw_add(&meraki_gw_list, mgw);
+-                   gw_count++;
++               const struct meraki_config *c = (const struct meraki_config *) (P->cf);
++               int gw_num = peer_num;
++
++               if (!is_ebgp_peer(&c->ebgp_peer_list, e->attrs->gw)) {
++                   //
++                   // Find or create a gateway since this is one that
++                   // wired_brain doesn't already know about.
++                   //
++                   struct meraki_gw *mgw = meraki_gw_find(&meraki_gw_list, e->attrs->gw);
++                   if (mgw == NULL) {
++                       char gw_buf[STD_ADDRESS_P_LENGTH];
++
++                       // A new gateway to configure.
++                       mgw = meraki_gw_create(P, e->attrs->gw, gw_count);
++                       meraki_gw_add(&meraki_gw_list, mgw);
++                       gw_count++;
+ #ifdef IPV6
+-                   ip6_ntop(e->attrs->gw, gw_buf);
++                       ip6_ntop(e->attrs->gw, gw_buf);
+ #else
+-                   ip4_ntop(e->attrs->gw, gw_buf);
++                       ip4_ntop(e->attrs->gw, gw_buf);
+ #endif
+-                   if (0 > fprintf(out, "gateway%u:address %s\n",
+-                                   mgw->gw_num, gw_buf)) {
+-                       log("failed to write to %s!", outfile_tmp);
++                       if (0 > fprintf(out, "gateway%u:address %s\n",
++                                       mgw->gw_num, gw_buf)) {
++                           log("failed to write to %s!", outfile_tmp);
++                       }
+                    }
++                   gw_num = mgw->gw_num;
+                }
+ 
+                get_bgp_source_key(e, source_key, BGP_SOURCE_KEY_LEN, 'E');
+@@ -215,7 +238,7 @@ meraki_notify(struct proto *P, rtable *src_table, net *n, rte *new UNUSED, rte *
+                            "vpn_joined_subnet%u:subnet %s/%d\n",
+                            route_count, ip_buf, n->n.pxlen,
+                            route_count,
+-                           route_count, mgw->gw_num,
++                           route_count, gw_num,
+                            route_count, BIRD_EXPORTED_ROUTE_METRIC,
+                            route_count,
+                            route_count, source_key,
+@@ -307,7 +330,7 @@ meraki_reconfigure(struct proto *P UNUSED, struct proto_config *C UNUSED)
+ struct protocol proto_meraki = {
+   .name =        "Meraki Config",
+   .template =    "meraki%d",
+-  .config_size =  sizeof(struct proto_config),
++  .config_size =  sizeof(struct meraki_config),
+   .init =         meraki_init,
+   .start =        meraki_start,
+   .reconfigure =  meraki_reconfigure,
+diff --git a/proto/meraki/meraki.h b/proto/meraki/meraki.h
+index d4f8c168..087b7fff 100644
+--- a/proto/meraki/meraki.h
++++ b/proto/meraki/meraki.h
+@@ -3,12 +3,18 @@
+ 
+ struct meraki_config {
+   struct proto_config c;
++  list ebgp_peer_list;		/* List of EBGP peers (meraki_ebgp_peer_config) */
+ };
+ 
+ struct meraki_proto {
+   struct proto p;
+ };
+ 
++/* An item on ebgp_peer_list */
++struct meraki_ebgp_peer_config {
++  node n;
++  ip_addr addr;
++};
+ 
+ extern struct protocol proto_meraki;
+ 
+-- 
+2.22.0
+

@@ -1,0 +1,69 @@
+diff --git a/sysdep/click/krt.c b/sysdep/click/krt.c
+index 445916a7..654fdc40 100644
+--- a/sysdep/click/krt.c
++++ b/sysdep/click/krt.c
+@@ -226,6 +226,14 @@ route_is_multipath(const rte *route)
+            && route->attrs->nexthops != NULL;
+ }
+ 
++/**
++ * Requires: 'p', 'route_info' are non NULL, and the value of 'action' is
++ * either CLICK_ROUTE_ADD or CLICK_ROUTE_REMOVE.
++ *
++ * Writes the contents of 'route_info' to the appropriate Click handler
++ * (either the add_route or the remove_route handler) based on the value of
++ * 'action'.
++ */
+ static void
+ write_route_to_click(const struct proto *p,
+         const struct click_route_info *route_info,
+@@ -279,6 +287,14 @@ write_route_to_click(const struct proto *p,
+     }
+ }
+ 
++/**
++ * Requires: 'p', 'net', 'route' are non NULL, and the value of 'action' is
++ * either CLICK_ROUTE_ADD or CLICK_ROUTE_REMOVE.
++ *
++ * Tells Click to either add or remove a route, depending on the 'action'.
++ * The route information is derived from the information contained in 'net'
++ * and 'route'.
++ */
+ static void
+ push_route_info_to_click(const struct proto *p, const net *net, const rte *route,
+         int action)
+diff --git a/sysdep/click/krt.h b/sysdep/click/krt.h
+index 825b13cf..1b3419d3 100644
+--- a/sysdep/click/krt.h
++++ b/sysdep/click/krt.h
+@@ -56,27 +56,4 @@ struct click_route_info {
+ 
+ extern struct proto_config* krt_init_config(int class);
+ 
+-/**
+- * Requires: 'p', 'route_info' are non NULL, and the value of 'action' is
+- * either CLICK_ROUTE_ADD or CLICK_ROUTE_REMOVE.
+- *
+- * Writes the contents of 'route_info' to the appropriate Click handler
+- * (either the add_route or the remove_route handler) based on the value of
+- * 'action'.
+- */
+-static void write_route_to_click(const struct proto *p,
+-        const struct click_route_info *route_info,
+-        int action);
+-
+-/**
+- * Requires: 'p', 'net', 'route' are non NULL, and the value of 'action' is
+- * either CLICK_ROUTE_ADD or CLICK_ROUTE_REMOVE.
+- *
+- * Tells Click to either add or remove a route, depending on the 'action'.
+- * The route information is derived from the information contained in 'net'
+- * and 'route'.
+- */
+-static void push_route_info_to_click(const struct proto *p, const net *net,
+-        const rte *route, int action);
+-
+ #endif
+-- 
+2.22.0
+

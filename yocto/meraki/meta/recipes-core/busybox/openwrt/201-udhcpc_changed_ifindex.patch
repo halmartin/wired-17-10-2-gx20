@@ -1,0 +1,31 @@
+From 00d88f9ffc1484eb8a0761b03c3171ab47d4adbb Mon Sep 17 00:00:00 2001
+From: Felix Fietkau <nbd@openwrt.org>
+Date: Wed, 18 Jul 2007 08:23:36 +0000
+Subject: [PATCH]     add fix for running udhcpc on bridges (patch by Eric L.
+ Chen)
+
+    SVN-Revision: 8025
+---
+ networking/udhcp/dhcpc.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/networking/udhcp/dhcpc.c b/networking/udhcp/dhcpc.c
+index 044e944b8..6be4e2570 100644
+--- a/networking/udhcp/dhcpc.c
++++ b/networking/udhcp/dhcpc.c
+@@ -1416,6 +1416,12 @@ int udhcpc_main(int argc UNUSED_PARAM, c
+ 		/* silence "uninitialized!" warning */
+ 		unsigned timestamp_before_wait = timestamp_before_wait;
+ 
++		/* When running on a bridge, the ifindex may have changed (e.g. if
++		 * member interfaces were added/removed or if the status of the
++		 * bridge changed).
++		 * Workaround: refresh it here before processing the next packet */
++		udhcp_read_interface(client_data.interface, &client_data.ifindex, NULL, client_data.client_mac);
++
+ 		//bb_error_msg("sockfd:%d, listen_mode:%d", client_data.sockfd, client_data.listen_mode);
+ 
+ 		/* Was opening raw or udp socket here
+-- 
+2.22.0
+

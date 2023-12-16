@@ -1,0 +1,200 @@
+diff --git a/nest/proto.c b/nest/proto.c
+index b450dc44..8baf6b31 100644
+--- a/nest/proto.c
++++ b/nest/proto.c
+@@ -1771,3 +1771,24 @@ proto_get_named(struct symbol *sym, struct protocol *pr)
+     }
+   return p;
+ }
++
++/*
++ * Meraki addition: Walk the proto_list, calling a supplied callback
++ * for each proto struct on the list.  Note: there is a requirement
++ * here that the callback will not modify the list.
++ */
++void
++proto_walk(int (*cb)(const struct proto *p, void *ctx), void *ctx)
++{
++    node *nn;
++    WALK_LIST(nn, proto_list) {
++        const struct proto *P = SKIP_BACK(const struct proto, glob_node, nn);
++        if (!cb(P, ctx)) {
++            /* Stop walking */
++            break;
++        }
++    }
++
++    /* Indicate the end of the protos */
++    cb(NULL, ctx);
++}
+diff --git a/nest/protocol.h b/nest/protocol.h
+index d920d584..4a597ecf 100644
+--- a/nest/protocol.h
++++ b/nest/protocol.h
+@@ -480,4 +480,7 @@ struct announce_hook {
+ struct announce_hook *proto_add_announce_hook(struct proto *p, struct rtable *t, struct proto_stats *stats);
+ struct announce_hook *proto_find_announce_hook(struct proto *p, struct rtable *t);
+ 
++/* Meraki modification */
++void proto_walk(int (*cb)(const struct proto *p, void *ctx), void *ctx);
++
+ #endif
+diff --git a/proto/bgp/Makefile b/proto/bgp/Makefile
+index a634cf0d..4a6b532b 100644
+--- a/proto/bgp/Makefile
++++ b/proto/bgp/Makefile
+@@ -1,4 +1,4 @@
+-source=bgp.c attrs.c packets.c
++source=bgp.c attrs.c packets.c bgp_meraki.c
+ root-rel=../../
+ dir-name=proto/bgp
+ 
+diff --git a/proto/bgp/bgp.c b/proto/bgp/bgp.c
+index 300faa24..91421671 100644
+--- a/proto/bgp/bgp.c
++++ b/proto/bgp/bgp.c
+@@ -1600,7 +1600,7 @@ bgp_last_errmsg(struct bgp_proto *p)
+     }
+ }
+ 
+-static const char *
++const char *
+ bgp_state_dsc(struct bgp_proto *p)
+ {
+   if (p->p.proto_state == PS_DOWN)
+diff --git a/proto/bgp/bgp.h b/proto/bgp/bgp.h
+index d76f7f22..7a35dd7a 100644
+--- a/proto/bgp/bgp.h
++++ b/proto/bgp/bgp.h
+@@ -283,6 +283,9 @@ void bgp_free_prefix(struct bgp_proto *p, struct bgp_prefix *bp);
+ uint bgp_encode_attrs(struct bgp_proto *p, byte *w, ea_list *attrs, int remains);
+ void bgp_get_route_info(struct rte *, byte *buf, struct ea_list *attrs);
+ 
++/* Meraki modification to expose this outside of bgp.c */
++const char *bgp_state_dsc(struct bgp_proto *p);
++
+ inline static void bgp_attach_attr_ip(struct ea_list **to, struct linpool *pool, unsigned attr, ip_addr a)
+ { *(ip_addr *) bgp_attach_attr_wa(to, pool, attr, sizeof(ip_addr)) = a; }
+ 
+diff --git a/proto/bgp/bgp_meraki.c b/proto/bgp/bgp_meraki.c
+new file mode 100644
+index 00000000..f223d074
+--- /dev/null
++++ b/proto/bgp/bgp_meraki.c
+@@ -0,0 +1,75 @@
++#undef LOCAL_DEBUG
++
++#include "nest/bird.h"
++#include "nest/protocol.h"
++#include "nest/cli.h"
++#include "proto/bgp/bgp.h"
++#include "proto/bgp/bgp_meraki.h"
++
++/* Meraki-specific code */
++
++struct bgp_meraki_sh_peer_json_context {
++    int opened;
++    int opened_peers;
++};
++
++static int
++bgp_meraki_sh_peer_json(const struct proto *P, void *ctx)
++{
++    struct bgp_proto *p = NULL;
++    struct bgp_meraki_sh_peer_json_context *context = ctx;
++
++    if (P == NULL) {
++        /* Walk is done, close any open containers */
++        if (context->opened_peers) {
++            cli_msg(-1106, "]");
++        }
++        cli_msg(-1106, "}");
++        cli_msg(0, "");
++        return 1;
++    }
++
++    if (!context->opened) {
++        /* Open the outermost container */
++        cli_msg(-1106, "{");
++        context->opened = 1;
++    }
++
++    if (P->proto != &proto_bgp) {
++        /* Skip this one */
++        return 1;
++    }
++
++    p = (struct bgp_proto *) P;
++
++    if (!context->opened_peers) {
++        cli_msg(-1106, "\"peers\": [");
++    }
++    cli_msg(-1106, "%s{ "
++            "\"type\":\"%s\", "
++            "\"remote_as_number\":%u, "
++            "\"remote_address\":\"%I\", "
++            "\"state\":\"%s\", "
++            "\"exported_routes\":%u, "
++            "\"imported_routes\":%u "
++            "}",
++            context->opened_peers ? ", " : "",
++            p->is_internal ? "IBGP" : "EBGP",
++            p->remote_as, p->cf->remote_ip,
++            bgp_state_dsc(p),
++            P->stats.exp_routes,
++            P->stats.imp_routes);
++    if (!context->opened_peers) {
++        context->opened_peers = 1;
++    }
++
++    return 1;
++}
++
++void
++bgp_meraki_sh_peers_json(void)
++{
++    struct bgp_meraki_sh_peer_json_context context;
++    context.opened = context.opened_peers = 0;
++    proto_walk(bgp_meraki_sh_peer_json, &context);
++}
+diff --git a/proto/bgp/bgp_meraki.h b/proto/bgp/bgp_meraki.h
+new file mode 100644
+index 00000000..39c04c6a
+--- /dev/null
++++ b/proto/bgp/bgp_meraki.h
+@@ -0,0 +1,8 @@
++#ifndef _BIRD_BGP_MERAKI_H_
++#define _BIRD_BGP_MERAKI_H_
++
++/* Meraki-specific code */
++
++void bgp_meraki_sh_peers_json(void);
++
++#endif
+diff --git a/proto/bgp/config.Y b/proto/bgp/config.Y
+index 033fb9ef..f4134887 100644
+--- a/proto/bgp/config.Y
++++ b/proto/bgp/config.Y
+@@ -9,6 +9,7 @@
+ CF_HDR
+ 
+ #include "proto/bgp/bgp.h"
++#include "proto/bgp/bgp_meraki.h"
+ 
+ CF_DEFINES
+ 
+@@ -204,6 +205,11 @@ CF_ADDTO(dynamic_attr, BGP_LARGE_COMMUNITY
+ 
+ CF_ENUM(T_ENUM_BGP_ORIGIN, ORIGIN_, IGP, EGP, INCOMPLETE)
+ 
++/* Meraki additions */
++CF_CLI_HELP(EXPORT BGP, ..., [[Export information about BGP protocol]]);
++CF_CLI(EXPORT BGP PEERS,,, [[Export information about BGP peers in JSON]])
++{ bgp_meraki_sh_peers_json(); };
++
+ CF_CODE
+ 
+ CF_END
+-- 
+2.22.0
+

@@ -1,0 +1,49 @@
+diff --git a/proto/meraki/meraki.c b/proto/meraki/meraki.c
+index 4922b66f..838cb172 100644
+--- a/proto/meraki/meraki.c
++++ b/proto/meraki/meraki.c
+@@ -79,6 +79,8 @@ meraki_notify(struct proto *P, rtable *src_table, net *n, rte *new, rte *old, ea
+ 
+    fclose(out);
+ 
++   log("%s: updating config file with %d routes", P->name, route_count - BIRD_EXPORTED_ROUTE_BEGIN);
++
+    rename(outfile_tmp, outfile);
+ }
+ 
+@@ -100,9 +102,29 @@ meraki_init(struct proto_config *C)
+   return P;
+ }
+ 
++static int
++meraki_start(struct proto *P)
++{
++    log("meraki_config starting!!");
++    if (P->gr_recovery) {
++        log("meraki_config waiting on graceful recovery");
++        P->gr_wait = 1;
++    }
++    return PS_UP;
++}
++
++static int
++meraki_reconfigure(struct proto *P, struct proto_config *C)
++{
++    log("meraki_config noop reconfigure");
++    return 1;
++}
+ 
+ struct protocol proto_meraki = {
+-  name:			"Meraki Config",
+-  template:		"meraki%d",
+-  init:			meraki_init,
++  .name =        "Meraki Config",
++  .template =    "meraki%d",
++  .config_size =  sizeof(struct proto_config),
++  .init =         meraki_init,
++  .start =        meraki_start,
++  .reconfigure =  meraki_reconfigure,
+ };
+-- 
+2.22.0
+

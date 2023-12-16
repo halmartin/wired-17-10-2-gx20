@@ -1,0 +1,83 @@
+diff -ru memtester-4.3.0/memtester.c memtester-4.3.0-new/memtester.c
+--- memtester-4.3.0/memtester.c	2012-06-09 14:45:22.000000000 -0700
++++ memtester-4.3.0-new/memtester.c	2018-01-22 15:09:24.564129021 -0800
+@@ -102,7 +103,7 @@
+ /* Function definitions */
+ void usage(char *me) {
+     fprintf(stderr, "\n"
+-            "Usage: %s [-p physaddrbase [-d device]] <mem>[B|K|M|G] [loops]\n",
++            "Usage: %s [-p physaddrbase [-d device]] [-t \"test name\"] <mem>[B|K|M|G] [loops]\n",
+             me);
+     exit(EXIT_FAIL_NONSTARTER);
+ }
+@@ -111,7 +112,7 @@
+     ul loops, loop, i;
+     size_t pagesize, wantraw, wantmb, wantbytes, wantbytes_orig, bufsize,
+          halflen, count;
+-    char *memsuffix, *addrsuffix, *loopsuffix;
++    char *memsuffix, *addrsuffix, *loopsuffix, *run_only_this_test = 0;
+     ptrdiff_t pagesizemask;
+     void volatile *buf, *aligned;
+     ulv *bufa, *bufb;
+@@ -150,7 +151,7 @@
+         printf("using testmask 0x%lx\n", testmask);
+     }
+ 
+-    while ((opt = getopt(argc, argv, "p:d:")) != -1) {
++    while ((opt = getopt(argc, argv, "p:d:t:")) != -1) {
+         switch (opt) {
+             case 'p':
+                 errno = 0;
+@@ -193,6 +194,9 @@
+                     }
+                 }
+                 break;              
++            case 't':
++                run_only_this_test = optarg;
++                break;
+             default: /* '?' */
+                 usage(argv[0]); /* doesn't return */
+         }
+@@ -370,12 +374,14 @@
+             printf("/%lu", loops);
+         }
+         printf(":\n");
+-        printf("  %-20s: ", "Stuck Address");
+-        fflush(stdout);
+-        if (!test_stuck_address(aligned, bufsize / sizeof(ul))) {
+-             printf("ok\n");
+-        } else {
+-            exit_code |= EXIT_FAIL_ADDRESSLINES;
++        if (!run_only_this_test || 0 == strcmp(run_only_this_test, "Stuck Address")) {
++            printf("  %-20s: ", "Stuck Address");
++            fflush(stdout);
++            if (!test_stuck_address(aligned, bufsize / sizeof(ul))) {
++                printf("ok\n");
++            } else {
++                exit_code |= EXIT_FAIL_ADDRESSLINES;
++            }
+         }
+         for (i=0;;i++) {
+             if (!tests[i].name) break;
+@@ -385,13 +391,15 @@
+             if (testmask && (!((1 << i) & testmask))) {
+                 continue;
+             }
+-            printf("  %-20s: ", tests[i].name);
+-            if (!tests[i].fp(bufa, bufb, count)) {
+-                printf("ok\n");
+-            } else {
+-                exit_code |= EXIT_FAIL_OTHERTEST;
++            if (!run_only_this_test || 0 == strcmp(run_only_this_test, tests[i].name)) {
++                printf("  %-20s: ", tests[i].name);
++                if (!tests[i].fp(bufa, bufb, count)) {
++                    printf("ok\n");
++                } else {
++                    exit_code |= EXIT_FAIL_OTHERTEST;
++                }
++                fflush(stdout);
+             }
+-            fflush(stdout);
+         }
+         printf("\n");
+         fflush(stdout);

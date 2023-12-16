@@ -1,0 +1,172 @@
+From 69ff6f7e223e71be378c5893371551f314c155d6 Mon Sep 17 00:00:00 2001
+From: Jerry Xu <jerxu@meraki.com>
+Date: Fri, 1 Oct 2021 15:19:45 -0700
+Subject: [PATCH] add-fipsmode
+
+Add FIPs mode
+
+---
+ include/ldap.h               |  1 +
+ libraries/libldap/init.c     |  2 ++
+ libraries/libldap/ldap-int.h |  1 +
+ libraries/libldap/tls2.c     |  8 +++++++
+ libraries/libldap/tls_o.c    | 44 ++++++++++++++++++++++++++++++++++++
+ 5 files changed, 56 insertions(+)
+
+diff --git a/include/ldap.h b/include/ldap.h
+index 3894410..16d46c3 100644
+--- a/include/ldap.h
++++ b/include/ldap.h
+@@ -159,6 +159,7 @@ LDAP_BEGIN_DECL
+ #define LDAP_OPT_X_TLS_CRLFILE		0x6010	/* GNUtls only */
+ #define LDAP_OPT_X_TLS_PACKAGE		0x6011
+ #define LDAP_OPT_X_TLS_ECNAME		0x6012
++#define LDAP_OPT_X_TLS_FIPS_MODE	0x6013  /* OpenSSL FIPS mode */
+ #define LDAP_OPT_X_TLS_REQUIRE_SAN	0x601a
+ 
+ #define LDAP_OPT_X_TLS_NEVER	0
+diff --git a/libraries/libldap/init.c b/libraries/libldap/init.c
+index 182ef7d..c2197af 100644
+--- a/libraries/libldap/init.c
++++ b/libraries/libldap/init.c
+@@ -131,6 +131,7 @@ static const struct ol_attribute {
+ 	{0, ATTR_TLS,	"TLS_RANDFILE",		NULL,	LDAP_OPT_X_TLS_RANDOM_FILE},
+ 	{0, ATTR_TLS,	"TLS_CIPHER_SUITE",	NULL,	LDAP_OPT_X_TLS_CIPHER_SUITE},
+ 	{0, ATTR_TLS,	"TLS_PROTOCOL_MIN",	NULL,	LDAP_OPT_X_TLS_PROTOCOL_MIN},
++	{0, ATTR_TLS,   "TLS_FIPS_MODE",	NULL,	LDAP_OPT_X_TLS_FIPS_MODE},
+ 	{0, ATTR_TLS,	"TLS_ECNAME",		NULL,	LDAP_OPT_X_TLS_ECNAME},
+ 
+ #ifdef HAVE_OPENSSL_CRL
+@@ -575,6 +576,7 @@ void ldap_int_initialize_global_options( struct ldapoptions *gopts, int *dbglvl
+ 	gopts->ldo_tls_connect_cb = NULL;
+ 	gopts->ldo_tls_connect_arg = NULL;
+ 	gopts->ldo_tls_require_cert = LDAP_OPT_X_TLS_DEMAND;
++	gopts->ldo_tls_fips_mode = 0;
+ 	gopts->ldo_tls_require_san = LDAP_OPT_X_TLS_ALLOW;
+ #endif
+ 	gopts->ldo_keepalive_probes = 0;
+diff --git a/libraries/libldap/ldap-int.h b/libraries/libldap/ldap-int.h
+index 98ad4dc..57b17c8 100644
+--- a/libraries/libldap/ldap-int.h
++++ b/libraries/libldap/ldap-int.h
+@@ -262,6 +262,7 @@ struct ldapoptions {
+    	int			ldo_tls_require_cert;
+ 	int			ldo_tls_impl;
+    	int			ldo_tls_crlcheck;
++    int			ldo_tls_fips_mode;
+ 	int			ldo_tls_require_san;
+ #define LDAP_LDO_TLS_NULLARG ,0,0,0,{0,0,0,0,0,0,0,0,0},0,0,0,0,0
+ #else
+diff --git a/libraries/libldap/tls2.c b/libraries/libldap/tls2.c
+index 82ca527..e863dc7 100644
+--- a/libraries/libldap/tls2.c
++++ b/libraries/libldap/tls2.c
+@@ -534,6 +534,7 @@ ldap_int_tls_config( LDAP *ld, int option, const char *arg )
+ 	case LDAP_OPT_X_TLS_DHFILE:
+ 	case LDAP_OPT_X_TLS_ECNAME:
+ 	case LDAP_OPT_X_TLS_CRLFILE:	/* GnuTLS only */
++	case LDAP_OPT_X_TLS_FIPS_MODE:
+ 		return ldap_pvt_tls_set_option( ld, option, (void *) arg );
+ 
+ 	case LDAP_OPT_X_TLS_REQUIRE_CERT:
+@@ -705,6 +706,9 @@ ldap_pvt_tls_get_option( LDAP *ld, int option, void *arg )
+ 	case LDAP_OPT_X_TLS_CONNECT_ARG:
+ 		*(void **)arg = lo->ldo_tls_connect_arg;
+ 		break;
++	case LDAP_OPT_X_TLS_FIPS_MODE:
++		*(int *)arg = lo->ldo_tls_fips_mode;
++		break;
+ 	default:
+ 		return -1;
+ 	}
+@@ -848,6 +852,10 @@ ldap_pvt_tls_set_option( LDAP *ld, int option, void *arg )
+ 			ldap_pvt_tls_ctx_free( lo->ldo_tls_ctx );
+ 		lo->ldo_tls_ctx = NULL;
+ 		return ldap_int_tls_init_ctx( lo, *(int *)arg );
++	case LDAP_OPT_X_TLS_FIPS_MODE:
++		if ( !arg ) return -1;
++		lo->ldo_tls_fips_mode = *(int *)arg;
++		return 0;
+ 	default:
+ 		return -1;
+ 	}
+diff --git a/libraries/libldap/tls_o.c b/libraries/libldap/tls_o.c
+index a13f11f..680b399 100644
+--- a/libraries/libldap/tls_o.c
++++ b/libraries/libldap/tls_o.c
+@@ -33,6 +33,7 @@
+ #include <ac/unistd.h>
+ #include <ac/param.h>
+ #include <ac/dirent.h>
++#include <ac/syslog.h>
+ 
+ #include "ldap-int.h"
+ #include "ldap-tls.h"
+@@ -68,6 +69,7 @@ static void tlso_info_cb( const SSL *ssl, int where, int ret );
+ static int tlso_verify_cb( int ok, X509_STORE_CTX *ctx );
+ static int tlso_verify_ok( int ok, X509_STORE_CTX *ctx );
+ static int tlso_seed_PRNG( const char *randfile );
++static void tlso_set_fips_mode( int fips_mode);
+ #if OPENSSL_VERSION_NUMBER < 0x10100000
+ /*
+  * OpenSSL 1.1 API and later has new locking code
+@@ -212,7 +214,10 @@ tlso_init( void )
+ 	SSL_load_error_strings();
+ 	SSL_library_init();
+ 	OpenSSL_add_all_digests();
++	tlso_set_fips_mode(lo->ldo_tls_fips_mode);
+ #else
++	/* Enable FIPS mode before openssl init */
++	tlso_set_fips_mode(lo->ldo_tls_fips_mode);
+ 	OPENSSL_init_ssl(0, NULL);
+ #endif
+ 
+@@ -224,6 +229,45 @@ tlso_init( void )
+ 	return 0;
+ }
+ 
++/*
++ * Enable/Disable FIPS mode based on the given fips_mode value
++ * @param fips_mode Integer value. 0 will disable FIPS mode and
++ *                  1 will enable FIPS mode.
++ */
++static void
++tlso_set_fips_mode(int fips_mode)
++{
++        int current_fips_mode = FIPS_mode();
++        int expected_fips_mode = fips_mode;
++        int line;
++
++        const char *on_off = "off";
++        const char *on_off_detailed = "off";
++        unsigned long err = 0;
++        char *err_msg = NULL;
++        const char *file = NULL;
++
++        if (fips_mode) {
++            on_off = "on";
++            on_off_detailed = "on and all Self-Tests have passed";
++        }
++
++        if (current_fips_mode != expected_fips_mode) {
++            if (FIPS_mode_set(expected_fips_mode)) {
++                if (FIPS_mode() == expected_fips_mode) {
++                    syslog(LOG_ALERT, "openldap: Successfully turned FIPS mode %s\n", on_off_detailed);
++                } else {
++                    syslog(LOG_ERR, "openldap: Failed to turn FIPS mode %s\n", on_off);
++                }
++            } else {
++                err = ERR_get_error_line(&file, &line);
++                err_msg = ERR_error_string(err, NULL);
++                syslog(LOG_ERR, "openldap: Failed to turn FIPS mode %s. Error: %s in %s line %d",
++                        on_off, err_msg, file, line);
++            }
++        }
++}
++
+ /*
+  * Tear down the TLS subsystem. Should only be called once.
+  */
+-- 
+2.35.1
+

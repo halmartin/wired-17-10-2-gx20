@@ -1,0 +1,16 @@
+diff --git a/proto/meraki/meraki.c b/proto/meraki/meraki.c
+index bb1ed7c7..cf8c69e1 100644
+--- a/proto/meraki/meraki.c
++++ b/proto/meraki/meraki.c
+@@ -22,7 +22,7 @@
+ #include "meraki.h"
+ #include "meraki_gw.h"
+ #include "meraki_route.h"
+-#include "meraki_bird_defines.hh"
++#include <libmeraki/meraki_bird_defines.hh>
+ 
+ #include <stdio.h>
+ 
+-- 
+2.22.0
+

@@ -1,0 +1,57 @@
+From 4029308a6956629d917d40cc1ad88308d68b80e3 Mon Sep 17 00:00:00 2001
+From: Ted Lai <tedlai@meraki.com>
+Date: Sun, 12 Jun 2022 23:02:43 -0700
+Subject: [PATCH] add flock when reading config file
+
+Since wired_brain can be writing the config file while bird is reading,
+this commit adds a patch to bird2 so that bird2 uses flock to acquire
+an exclusive lock on the config file before reading it. Note that a
+separate commit is required to update wired_brain to use flock and this
+is done in next commit (Iea359896a96cd5456dccd3dcadcb2e1baab563ed).
+
+Jira: MX-16604
+---
+ sysdep/unix/main.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/sysdep/unix/main.c b/sysdep/unix/main.c
+index 282afae2..f201eecb 100644
+--- a/sysdep/unix/main.c
++++ b/sysdep/unix/main.c
+@@ -20,6 +20,7 @@
+ #include <pwd.h>
+ #include <grp.h>
+ #include <sys/stat.h>
++#include <sys/file.h>
+ #include <libgen.h>
+ 
+ #include "nest/bird.h"
+@@ -188,6 +189,13 @@ sysdep_commit(struct config *new, struct config *old UNUSED)
+ static int
+ unix_read_config(struct config **cp, char *name)
+ {
++  // MX-16604: Use flock before reading as wired_brain could be writing
++  // the config file. See configure_bird() in meraki_bird.cc for how
++  // wired_brain uses flock on bird2.conf
++  int lock_fd = open("/etc/bird2/bird2.conf", O_RDONLY);
++  if (flock(lock_fd, LOCK_EX) == -1)
++    debug("request flock failed on /etc/bird2/bird2.conf, fd: %d", lock_fd);
++
+   struct config *conf = config_alloc(name);
+   int ret;
+ 
+@@ -197,6 +205,11 @@ unix_read_config(struct config **cp, char *name)
+     return 0;
+   cf_read_hook = cf_read;
+   ret = config_parse(conf);
++
++  // Release flock
++  if (flock(lock_fd, LOCK_UN) == -1)
++    debug("release flock failed on /etc/bird2/bird2.conf, fd: %d", lock_fd);
++
+   close(conf->file_fd);
+   return ret;
+ }
+-- 
+2.37.0
+

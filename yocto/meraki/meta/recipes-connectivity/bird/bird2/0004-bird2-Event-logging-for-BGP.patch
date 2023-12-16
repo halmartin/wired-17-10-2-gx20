@@ -1,0 +1,96 @@
+From f7e5e2f12dda5fd92192b5a12c7d68471a0d55dd Mon Sep 17 00:00:00 2001
+From: Bashar Mohd <basharm@meraki.com>
+Date: Fri, 10 Dec 2021 09:40:10 -0800
+Subject: [PATCH] bird2-Event-logging-for-BGP
+
+Add the following events for BIRD2 BGP:
+ 1. bgp_received_notification
+ 2. bgp_sent_notification
+ 3. bgp_session_established
+ 4. bgp_session_unestablished
+
+This is an adaptation of 0025-BGP-Add-event-logs-for-BGP.patch for
+BIRD1.
+---
+ proto/bgp/bgp.c     | 20 ++++++++++++++++++++
+ proto/bgp/packets.c |  5 +++++
+ 2 files changed, 25 insertions(+)
+
+diff --git a/proto/bgp/bgp.c b/proto/bgp/bgp.c
+index e33d53f5..5a8f3da6 100644
+--- a/proto/bgp/bgp.c
++++ b/proto/bgp/bgp.c
+@@ -120,6 +120,7 @@
+ #include "lib/socket.h"
+ #include "lib/resource.h"
+ #include "lib/string.h"
++#include "lib/eventlog.h"
+ 
+ #include "bgp.h"
+ 
+@@ -139,6 +140,8 @@ static void bgp_update_bfd(struct bgp_proto *p, int use_bfd);
+ static int bgp_incoming_connection(sock *sk, uint dummy UNUSED);
+ static void bgp_listen_sock_err(sock *sk UNUSED, int err);
+ 
++static char *bgp_state_names[];
++
+ /**
+  * bgp_open - open a BGP instance
+  * @p: BGP instance
+@@ -520,6 +523,19 @@ bgp_stop(struct bgp_proto *p, int subcode, byte *data, uint len)
+ static inline void
+ bgp_conn_set_state(struct bgp_conn *conn, uint new_state)
+ {
++  if ((conn->state != BS_ESTABLISHED) && (new_state == BS_ESTABLISHED)) {
++    log_event("bgp_session_established",
++              "peer_ip='%I' local_as='%u' remote_as='%u'",
++              conn->sk ? conn->sk->daddr : IPA_NONE,
++              conn->bgp->local_as, conn->bgp->remote_as);
++  } else if ((conn->state == BS_ESTABLISHED) && (new_state != BS_ESTABLISHED)) {
++    log_event("bgp_session_unestablished",
++              "peer_ip='%I' local_as='%u' remote_as='%u' new_state='%s'",
++              conn->sk ? conn->sk->daddr : IPA_NONE,
++              conn->bgp->local_as, conn->bgp->remote_as,
++              bgp_state_names[new_state]);
++  }
++
+   if (conn->bgp->p.mrtdump & MD_STATES)
+     bgp_dump_state_change(conn, conn->state, new_state);
+ 
+@@ -2145,6 +2161,10 @@ bgp_error(struct bgp_conn *c, uint code, uint subcode, byte *data, int len)
+ 
+   bgp_log_error(p, BE_BGP_TX, "Error", code, subcode, data, ABS(len));
+   bgp_store_error(p, c, BE_BGP_TX, (code << 16) | subcode);
++  log_event("bgp_sent_notification",
++            "peer_ip='%I' local_as='%u' remote_as='%u' error_code='%u' error_subcode='%u' desc='%s'",
++            c->sk ? c->sk->daddr : IPA_NONE, p->local_as, p->remote_as,
++            code, subcode, bgp_error_dsc(code, subcode));
+   bgp_conn_enter_close_state(c);
+ 
+   c->notify_code = code;
+diff --git a/proto/bgp/packets.c b/proto/bgp/packets.c
+index c3bd600a..718b3b40 100644
+--- a/proto/bgp/packets.c
++++ b/proto/bgp/packets.c
+@@ -22,6 +22,7 @@
+ #include "lib/unaligned.h"
+ #include "lib/flowspec.h"
+ #include "lib/socket.h"
++#include "lib/eventlog.h"
+ 
+ #include "nest/cli.h"
+ 
+@@ -3031,6 +3032,10 @@ bgp_rx_notification(struct bgp_conn *conn, byte *pkt, uint len)
+ 
+   bgp_log_error(p, BE_BGP_RX, "Received", code, subcode, pkt+21, len-21);
+   bgp_store_error(p, conn, BE_BGP_RX, (code << 16) | subcode);
++  log_event("bgp_received_notification",
++            "peer_ip='%I' local_as='%u' remote_as='%u' error_code='%u' error_subcode='%u' desc='%s'",
++            conn->sk ? conn->sk->daddr : IPA_NONE, p->local_as, p->remote_as,
++            code, subcode, bgp_error_dsc(code, subcode));
+ 
+   bgp_conn_enter_close_state(conn);
+   bgp_schedule_packet(conn, NULL, PKT_SCHEDULE_CLOSE);
+-- 
+2.34.1
+

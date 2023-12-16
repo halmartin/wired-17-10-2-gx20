@@ -1,0 +1,28 @@
+From cd266d3ce78ee8a279fe3a8d44c5844b363d90e9 Mon Sep 17 00:00:00 2001
+From: whauser <whauser@meraki.com>
+Date: Mon, 11 Oct 2021 07:30:02 -0700
+Subject: pppd: pppoe no disconnect warning
+
+---
+ pppd/plugins/rp-pppoe/plugin.c | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/pppd/plugins/rp-pppoe/plugin.c b/pppd/plugins/rp-pppoe/plugin.c
+index 326615f..194ce8a 100644
+--- a/pppd/plugins/rp-pppoe/plugin.c
++++ b/pppd/plugins/rp-pppoe/plugin.c
+@@ -307,9 +307,8 @@ PPPOEDisconnectDevice(void)
+     sp.sa_addr.pppoe.sid = 0;
+     memcpy(sp.sa_addr.pppoe.dev, conn->ifName, IFNAMSIZ);
+     memcpy(sp.sa_addr.pppoe.remote, conn->peerEth, ETH_ALEN);
+-    if (connect(conn->sessionSocket, (struct sockaddr *) &sp,
+-		sizeof(struct sockaddr_pppox)) < 0 && errno != EALREADY)
+-	error("Failed to disconnect PPPoE socket: %d %m", errno);
++    connect(conn->sessionSocket, (struct sockaddr *) &sp,
++	    sizeof(struct sockaddr_pppox));
+     close(conn->sessionSocket);
+     if (conn->discoverySocket >= 0) {
+         sendPADT(conn, NULL);
+-- 
+2.32.0
+

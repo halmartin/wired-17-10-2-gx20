@@ -1,0 +1,101 @@
+diff --git a/proto/bgp/Makefile b/proto/bgp/Makefile
+index 4a6b532b..a634cf0d 100644
+--- a/proto/bgp/Makefile
++++ b/proto/bgp/Makefile
+@@ -1,4 +1,4 @@
+-source=bgp.c attrs.c packets.c bgp_meraki.c
++source=bgp.c attrs.c packets.c
+ root-rel=../../
+ dir-name=proto/bgp
+ 
+diff --git a/proto/bgp/config.Y b/proto/bgp/config.Y
+index f4134887..033fb9ef 100644
+--- a/proto/bgp/config.Y
++++ b/proto/bgp/config.Y
+@@ -9,7 +9,6 @@
+ CF_HDR
+ 
+ #include "proto/bgp/bgp.h"
+-#include "proto/bgp/bgp_meraki.h"
+ 
+ CF_DEFINES
+ 
+@@ -205,11 +204,6 @@ CF_ADDTO(dynamic_attr, BGP_LARGE_COMMUNITY
+ 
+ CF_ENUM(T_ENUM_BGP_ORIGIN, ORIGIN_, IGP, EGP, INCOMPLETE)
+ 
+-/* Meraki additions */
+-CF_CLI_HELP(EXPORT BGP, ..., [[Export information about BGP protocol]]);
+-CF_CLI(EXPORT BGP PEERS,,, [[Export information about BGP peers in JSON]])
+-{ bgp_meraki_sh_peers_json(); };
+-
+ CF_CODE
+ 
+ CF_END
+diff --git a/proto/meraki/Makefile b/proto/meraki/Makefile
+index 4eee1855..54eb714c 100644
+--- a/proto/meraki/Makefile
++++ b/proto/meraki/Makefile
+@@ -1,4 +1,4 @@
+-source=meraki.c meraki_gw.c
++source=meraki.c meraki_gw.c meraki_bgp.c
+ root-rel=../../
+ dir-name=proto/meraki
+ 
+diff --git a/proto/meraki/config.Y b/proto/meraki/config.Y
+index 024815a9..a799fd21 100644
+--- a/proto/meraki/config.Y
++++ b/proto/meraki/config.Y
+@@ -2,6 +2,7 @@ CF_HDR
+ 
+ #include "proto/meraki/meraki_gw.h"
+ #include "proto/meraki/meraki.h"
++#include "proto/meraki/meraki_bgp.h"
+ 
+ CF_DEFINES
+ 
+@@ -48,6 +49,10 @@ meraki_gateway_base: expr ipa
+  }
+ ;
+ 
++CF_CLI_HELP(EXPORT BGP, ..., [[Export information about BGP protocol]]);
++CF_CLI(EXPORT BGP PEERS,,, [[Export information about BGP peers in JSON]])
++{ bgp_meraki_sh_peers_json(); };
++
+ CF_CODE
+ 
+ CF_END
+diff --git a/proto/bgp/bgp_meraki.c b/proto/meraki/meraki_bgp.c
+similarity index 98%
+rename from proto/bgp/bgp_meraki.c
+rename to proto/meraki/meraki_bgp.c
+index f223d074..2cac7610 100644
+--- a/proto/bgp/bgp_meraki.c
++++ b/proto/meraki/meraki_bgp.c
+@@ -4,7 +4,7 @@
+ #include "nest/protocol.h"
+ #include "nest/cli.h"
+ #include "proto/bgp/bgp.h"
+-#include "proto/bgp/bgp_meraki.h"
++#include "meraki_bgp.h"
+ 
+ /* Meraki-specific code */
+ 
+diff --git a/proto/bgp/bgp_meraki.h b/proto/meraki/meraki_bgp.h
+similarity index 56%
+rename from proto/bgp/bgp_meraki.h
+rename to proto/meraki/meraki_bgp.h
+index 39c04c6a..c8f633bb 100644
+--- a/proto/bgp/bgp_meraki.h
++++ b/proto/meraki/meraki_bgp.h
+@@ -1,5 +1,5 @@
+-#ifndef _BIRD_BGP_MERAKI_H_
+-#define _BIRD_BGP_MERAKI_H_
++#ifndef _BIRD_MERAKI_BGP_H_
++#define _BIRD_MERAKI_BGP_H_
+ 
+ /* Meraki-specific code */
+ 
+-- 
+2.22.0
+

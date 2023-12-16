@@ -1,0 +1,50 @@
+diff --git a/proto/meraki/config.Y b/proto/meraki/config.Y
+index 57295165..b9a79704 100644
+--- a/proto/meraki/config.Y
++++ b/proto/meraki/config.Y
+@@ -13,6 +13,7 @@ CF_DECLS
+ 
+ CF_KEYWORDS(MERAKI, GATEWAYS)
+ CF_KEYWORDS(MERAKI_NOT_CONN)
++CF_KEYWORDS(MERAKI_PEER_OFFLINE)
+ 
+ %type <ra> ers_args
+ 
+@@ -75,6 +76,7 @@ ers_args:
+  ;
+ 
+ CF_ADDTO(dynamic_attr, MERAKI_NOT_CONN { $$ = f_new_dynamic_attr(EAF_TYPE_INT | EAF_TEMP, T_INT, EA_MERAKI_NOT_CONN); })
++CF_ADDTO(dynamic_attr, MERAKI_PEER_OFFLINE { $$ = f_new_dynamic_attr(EAF_TYPE_INT | EAF_TEMP, T_INT, EA_MERAKI_PEER_OFFLINE); })
+ 
+ CF_CODE
+ 
+diff --git a/proto/meraki/meraki.h b/proto/meraki/meraki.h
+index fd075b15..4c67b34b 100644
+--- a/proto/meraki/meraki.h
++++ b/proto/meraki/meraki.h
+@@ -10,6 +10,7 @@
+  * BIRD 1.6, there is only of these: EA_GEN_IGP_METRIC.
+  */
+ #define EA_MERAKI_NOT_CONN      EA_CODE(EAP_GENERIC, 10)
++#define EA_MERAKI_PEER_OFFLINE  EA_CODE(EAP_GENERIC, 11)
+ 
+ struct meraki_config {
+   struct proto_config c;
+diff --git a/proto/meraki/meraki_route.c b/proto/meraki/meraki_route.c
+index cd4fd158..f0498688 100644
+--- a/proto/meraki/meraki_route.c
++++ b/proto/meraki/meraki_route.c
+@@ -92,6 +92,10 @@ export_route_state_json_net(struct cli *c, net *n, struct rt_show_data *d)
+             if (meraki_not_conn_attr) {
+                 connected = 0;
+             }
++            eattr *meraki_peer_offline_attr = ea_find(attrs, EA_MERAKI_PEER_OFFLINE);
++            if (meraki_peer_offline_attr) {
++                connected = 0;
++            }
+         }
+ 
+         int primary = 0;
+-- 
+2.33.1
+

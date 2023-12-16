@@ -1,0 +1,15 @@
+Index: 7.2.1-r0/nuttcp-7.2.1.c
+===================================================================
+--- 7.2.1-r0.orig/nuttcp-7.2.1.c	2012-12-27 19:51:38.000000000 -0800
++++ 7.2.1-r0/nuttcp-7.2.1.c	2018-01-22 15:39:03.594195300 -0800
+@@ -4625,6 +4625,10 @@
+ 			err("socket");
+ 		}
+ 
++		if (udp && (stream_idx != 0)) {
++			setsockopt(fd[stream_idx], SOL_SOCKET, SO_NO_CHECK, (void *)&one, sizeof(one));
++		}
++
+ 		if (setsockopt(fd[stream_idx], SOL_SOCKET, SO_REUSEADDR, (void *)&one, sizeof(one)) < 0) {
+ 			if (clientserver && !client && (stream_idx == 1)) {
+ 				save_errno = errno;

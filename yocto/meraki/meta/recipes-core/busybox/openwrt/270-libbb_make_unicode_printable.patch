@@ -1,0 +1,43 @@
+From 2ab0dae9915d5c7c1c06c26ce1956bf0badd7a5b Mon Sep 17 00:00:00 2001
+From: Jo-Philipp Wich <jow@openwrt.org>
+Date: Mon, 27 Oct 2014 11:22:15 +0000
+Subject: [PATCH]     busybox: make high ASCII chars printable (#7993)
+
+    Currently busybox utils like "ls" fail to display filenames containing UTF-8
+    characters, replacing any special characters with "?".
+
+    Change libbb's printable_string() function to allow high ASCII characters so
+    that unicode filenames are displayed correctls.
+
+    Signed-off-by: Jo-Philipp Wich <jow@openwrt.org>
+
+    SVN-Revision: 43084
+---
+ libbb/printable_string.c | 4 +---
+ 1 file changed, 1 insertion(+), 3 deletions(-)
+
+diff --git a/libbb/printable_string.c b/libbb/printable_string.c
+index 077d58d32..e7399ae48 100644
+--- a/libbb/printable_string.c
++++ b/libbb/printable_string.c
+@@ -28,8 +28,6 @@ const char* FAST_FUNC printable_string2(
+ 		}
+ 		if (c < ' ')
+ 			break;
+-		if (c >= 0x7f)
+-			break;
+ 		s++;
+ 	}
+ 
+@@ -42,7 +40,7 @@ const char* FAST_FUNC printable_string2(
+ 			unsigned char c = *d;
+ 			if (c == '\0')
+ 				break;
+-			if (c < ' ' || c >= 0x7f)
++			if (c < ' ')
+ 				*d = '?';
+ 			d++;
+ 		}
+-- 
+2.22.0
+

@@ -1,0 +1,230 @@
+diff --git a/nest/proto.c b/nest/proto.c
+index 135cbc34..b450dc44 100644
+--- a/nest/proto.c
++++ b/nest/proto.c
+@@ -939,6 +939,9 @@ protos_build(void)
+ #ifdef CONFIG_BABEL
+   proto_build(&proto_babel);
+ #endif
++#ifdef CONFIG_MERAKI
++  proto_Build(&proto_meraki);
++#endif
+ 
+   proto_pool = rp_new(&root_pool, "Protocols");
+   proto_flush_event = ev_new(proto_pool);
+diff --git a/nest/protocol.h b/nest/protocol.h
+index 02fd8d96..d920d584 100644
+--- a/nest/protocol.h
++++ b/nest/protocol.h
+@@ -77,7 +77,7 @@ void protos_dump_all(void);
+ 
+ extern struct protocol
+   proto_device, proto_radv, proto_rip, proto_static, proto_mrt,
+-  proto_ospf, proto_pipe, proto_bgp, proto_bfd, proto_babel;
++  proto_ospf, proto_pipe, proto_bgp, proto_bfd, proto_babel, proto_meraki;
+ 
+ /*
+  *	Routing Protocol Instance
+diff --git a/proto/Doc b/proto/Doc
+index a8d0dcad..cdbb60d8 100644
+--- a/proto/Doc
++++ b/proto/Doc
+@@ -3,6 +3,7 @@ C babel
+ C bfd
+ C bgp
+ C mrt
++C meraki
+ C ospf
+ C pipe
+ C rip
+diff --git a/proto/meraki/Doc b/proto/meraki/Doc
+new file mode 100644
+index 00000000..0ed6304e
+--- /dev/null
++++ b/proto/meraki/Doc
+@@ -0,0 +1 @@
++S meraki.c
+diff --git a/proto/meraki/Makefile b/proto/meraki/Makefile
+new file mode 100644
+index 00000000..6e6d69e7
+--- /dev/null
++++ b/proto/meraki/Makefile
+@@ -0,0 +1,6 @@
++source=meraki.c
++root-rel=../../
++dir-name=proto/meraki
++
++include ../../Rules
++
+diff --git a/proto/meraki/config.Y b/proto/meraki/config.Y
+new file mode 100644
+index 00000000..d3f2b1cc
+--- /dev/null
++++ b/proto/meraki/config.Y
+@@ -0,0 +1,29 @@
++CF_HDR
++
++#include "proto/meraki/meraki.h"
++
++CF_DEFINES
++
++#define MERAKI_CFG ((struct meraki_config *) this_proto)
++
++CF_DECLS
++
++CF_KEYWORDS(MERAKI, OUTFILE)
++
++CF_GRAMMAR
++
++CF_ADDTO(proto, meraki_proto '}')
++
++meraki_proto_start: proto_start MERAKI {
++     this_proto = proto_config_new(&proto_meraki, $1);
++  }
++ ;
++
++meraki_proto:
++   meraki_proto_start proto_name '{'
++ | meraki_proto proto_item ';'
++ ;
++
++CF_CODE
++
++CF_END
+diff --git a/proto/meraki/meraki.c b/proto/meraki/meraki.c
+new file mode 100644
+index 00000000..7d6e40a9
+--- /dev/null
++++ b/proto/meraki/meraki.c
+@@ -0,0 +1,104 @@
++/**
++ * DOC: Meraki
++ *
++ * The Meraki protocol will output a meraki-style config file with options for
++ * use by an MX. The primary purpose is to allow BGP negotiation/route
++ * forwarding for sending routes via meraki VPN.
++ */
++
++#undef LOCAL_DEBUG
++
++#include "nest/bird.h"
++#include "nest/iface.h"
++#include "nest/protocol.h"
++#include "nest/route.h"
++#include "nest/cli.h"
++#include "conf/conf.h"
++#include "filter/filter.h"
++#include "lib/string.h"
++
++#include "meraki.h"
++
++#include <stdio.h>
++
++#define BIRD_EXPORTED_ROUTE_BEGIN 100000 //see meraki/wired_brain.cc
++
++static void
++meraki_notify(struct proto *P, rtable *src_table, net *n, rte *new, rte *old, ea_list *attrs)
++{
++   unsigned peer_num, route_count = BIRD_EXPORTED_ROUTE_BEGIN;
++   char ip_buf[STD_ADDRESS_P_LENGTH];
++
++   const char* outfile_tmp = "/tmp/config.tmp.tmp";
++   const char* outfile = "/tmp/config.tmp";
++
++   FILE *out = fopen(outfile_tmp, "w");
++   if (!outfile) {
++      log("unable to open %s\n", outfile_tmp);
++      return;
++   }
++
++   FIB_WALK(&src_table->fib, fn)
++   {
++       n = (net *) fn;
++       rte *e;
++       for(e = n->routes; e; e=e->next) {
++           ip_ntop(n->n.prefix, ip_buf);
++           if (sscanf(e->attrs->src->proto->name, "peer%u", &peer_num) > 0) {
++               if (0 > fprintf(out,
++                           "route%u:subnet %s/%2d\n"
++                           "route%u:type l3_vpn\n"
++                           "route%u:l3_vpn_peer_num %u\n",
++                           route_count, ip_buf, n->n.pxlen,
++                           route_count,
++                           route_count, peer_num)) {
++                   log("failed to write to %s!", outfile_tmp);
++               }
++               route_count++;
++           } else if (sscanf(e->attrs->src->proto->name, "neighbor%u", &peer_num) > 0) {
++               if (0 > fprintf(out,
++                           "route%u:subnet %s/%2d\n"
++                           "route%u:type static\n"
++                           "route%u:static_gateway_num %u\n"
++                           "vpn_joined_subnet%u:subnet %s/%2d\n",
++                           route_count, ip_buf, n->n.pxlen,
++                           route_count,
++                           route_count, peer_num,
++                           route_count, ip_buf, n->n.pxlen)) {
++                   log("failed to write to %s!", outfile_tmp);
++               }
++               route_count++;
++           }
++       }
++   }
++   FIB_WALK_END;
++
++   fclose(out);
++
++   rename(outfile_tmp, outfile);
++}
++
++
++static struct proto *
++meraki_init(struct proto_config *C)
++{
++  struct meraki_config *c = (struct meraki_config *)C;
++  struct proto *P = proto_new(C, sizeof(struct meraki_proto));
++  struct meraki_proto *p = (struct meraki_proto *) P;
++
++  //these will probably be useful later, but don't worry for now
++  (void)c;
++  (void)p;
++
++  P->rt_notify = meraki_notify;
++  P->accept_ra_types = RA_OPTIMAL;
++
++  return P;
++}
++
++
++struct protocol proto_meraki = {
++  name:			"Meraki Config",
++  template:		"meraki%d",
++  init:			meraki_init,
++};
+diff --git a/proto/meraki/meraki.h b/proto/meraki/meraki.h
+new file mode 100644
+index 00000000..d4f8c168
+--- /dev/null
++++ b/proto/meraki/meraki.h
+@@ -0,0 +1,18 @@
++#ifndef _BIRD_MERAKI_H_
++#define _BIRD_MERAKI_H_
++
++struct meraki_config {
++  struct proto_config c;
++};
++
++struct meraki_proto {
++  struct proto p;
++};
++
++
++extern struct protocol proto_meraki;
++
++static inline int proto_is_meraki(struct proto *p)
++{ return p->proto == &proto_meraki; }
++
++#endif
+-- 
+2.22.0
+

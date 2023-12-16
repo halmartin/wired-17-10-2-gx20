@@ -1,0 +1,15 @@
+diff --git a/proto/meraki/meraki_gw.c b/proto/meraki/meraki_gw.c
+index e424b93e..f772801a 100644
+--- a/proto/meraki/meraki_gw.c
++++ b/proto/meraki/meraki_gw.c
+@@ -38,6 +38,7 @@ meraki_gw_purge(list *gw_list)
+     struct meraki_gw *mgw, *next_mgw;
+     WALK_LIST_DELSAFE(mgw, next_mgw, *gw_list) {
+         rem_node(&mgw->n);
++        mb_free(mgw);
+     }
+ }
+ 
+-- 
+2.22.0
+

@@ -1,0 +1,32 @@
+From 421ca3075cfb4051e3d30e1de761425a519adf6e Mon Sep 17 00:00:00 2001
+From: Ted Lai <tedlai@Ted-Lai-MBP-work.local>
+Date: Wed, 1 May 2019 14:17:04 -0700
+Subject: [PATCH] Rename bird.ctl to bird2.ctl
+
+We rename bird.ctl to bird2.ctl so that both bird 1.x and 2.x can run
+at the same time. In the future, when we move IPv4 to bird 2.x, this
+patch will be removed.
+---
+ configure.ac | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index da1a8f4..bff7513 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -85,10 +85,10 @@ AC_SUBST([srcdir])
+ AS_IF([test -z "${runstatedir}"], [runstatedir='${localstatedir}/run'])
+ AC_SUBST([runstatedir])
+ 
+-CONFIG_FILE="\$(sysconfdir)/bird.conf"
++CONFIG_FILE="\$(sysconfdir)/bird2.conf"
+ AC_SUBST([CONFIG_FILE])
+ 
+-CONTROL_SOCKET="\$(runstatedir)/bird.ctl"
++CONTROL_SOCKET="\$(runstatedir)/bird2.ctl"
+ AC_SUBST([CONTROL_SOCKET])
+ 
+ AC_SEARCH_LIBS([clock_gettime], [rt posix4],
+-- 
+2.16.2
+

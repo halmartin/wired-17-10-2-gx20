@@ -1,0 +1,34 @@
+diff --git a/sysdep/click/krt.c b/sysdep/click/krt.c
+index f1619c13..fa795560 100644
+--- a/sysdep/click/krt.c
++++ b/sysdep/click/krt.c
+@@ -27,6 +27,7 @@
+ #include "nest/protocol.h"
+ #include "filter/filter.h"
+ #include "conf/conf.h"
++#include "lib/eventlog.h"
+ #include "lib/string.h"
+ #include "lib/ip.h"
+ 
+@@ -186,6 +187,9 @@ krt_import_control(struct proto *p, rte **new, ea_list **attrs, struct linpool *
+               if (ifa->pxlen != e->net->n.pxlen &&
+                   net_in_net(e->net->n.prefix, e->net->n.pxlen,
+                              ifa->prefix, ifa->pxlen)) {
++                  log_event("ospf_route_iface_overlap",
++                            "route_subnet='%I/%d' route_next_hop='%I' iface_subnet='%I/%d' vlan='%d'",
++                            e->net->n.prefix, e->net->n.pxlen, e->attrs->gw, ifa->prefix, ifa->pxlen, iface->index);
+                   return -1;
+               }
+           }
+@@ -199,6 +203,8 @@ krt_import_control(struct proto *p, rte **new, ea_list **attrs, struct linpool *
+       !(e->net->n.flags & KRF_INSTALLED)) {
+       time_t current = time(NULL);
+       if (difftime(current, kp->max_routes_event_time) >= cf->max_routes_event_timeout) {
++          log_event("ospf_route_overflow", "subnet='%I/%d' next_hop='%I'",
++                    e->net->n.prefix, e->net->n.pxlen, e->attrs->gw);
+           kp->max_routes_event_time = current;
+       }
+       return -1;
+-- 
+2.22.0
+

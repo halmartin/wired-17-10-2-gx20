@@ -1,0 +1,134 @@
+diff --git a/proto/meraki/meraki.c b/proto/meraki/meraki.c
+index 2dc26a9b..5a508a23 100644
+--- a/proto/meraki/meraki.c
++++ b/proto/meraki/meraki.c
+@@ -28,9 +28,29 @@
+ //Accommodate worst-case nexthop size
+ #define NEXTHOP_BUF_LEN sizeof("[\"xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx\", "\
+                                "\"xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx:xxxx\"]")
++//Accomodate worst case bgp source_key size
++#define BGP_SOURCE_KEY_LEN sizeof("BGP:xBGP:65535:xxx.xxx.xxx.xxx")
+ 
+-void
+-collect_bgp_info(rte *e, FILE *fp, const char* fname)
++static char
++get_bgp_origin_char(const eattr *origin_attr)
++{
++    if (!origin_attr) {
++        log("Route received doesn't have origin attribute.");
++        return '?';
++    }
++    switch (origin_attr->u.data) {
++        case ORIGIN_IGP:
++            return 'i';
++        case ORIGIN_EGP:
++            return 'e';
++        case ORIGIN_INCOMPLETE:
++        default:
++            return '?';
++    }
++}
++
++static void
++write_bgp_info(rte *e, FILE *fp, const char* fname)
+ {
+     ea_list *attrs = e->attrs->eattrs;
+     byte as_path[ASPATH_BUF_LEN];
+@@ -46,18 +66,7 @@ collect_bgp_info(rte *e, FILE *fp, const char* fname)
+      * json i.e. poder_agent has been programmed to handle malformed json.
+      */
+     // Extracting the origin attribute
+-    switch (origin_attr->u.data) {
+-        case ORIGIN_IGP:
+-            origin = 'i';
+-            break;
+-        case ORIGIN_EGP:
+-            origin = 'e';
+-            break;
+-        case ORIGIN_INCOMPLETE:
+-        default:
+-            origin = '?';
+-            break;
+-    }
++    origin = get_bgp_origin_char(origin_attr);
+     if (0 > fprintf(fp, "\"bgp_info\" :{"
+                         "\"origin\" : \"%c\",",
+                         origin)) {
+@@ -98,11 +107,18 @@ collect_bgp_info(rte *e, FILE *fp, const char* fname)
+     }
+ }
+ 
++static void
++get_bgp_source_key(rte *e, char* source_key, int len, char bgp_type)
++{
++    struct bgp_proto *p = (struct bgp_proto *) (e->attrs->src->proto);
++    bsnprintf(source_key, len, "BGP:%cBGP:%u:%I", bgp_type, p->remote_as, p->remote_id);
++}
++
+ static void
+ meraki_notify(struct proto *P, rtable *src_table, net *n, rte *new, rte *old, ea_list *attrs)
+ {
+    unsigned peer_num, route_count = BIRD_EXPORTED_ROUTE_BEGIN;
+-   char ip_buf[STD_ADDRESS_P_LENGTH];
++   char ip_buf[STD_ADDRESS_P_LENGTH], source_key[BGP_SOURCE_KEY_LEN];
+ 
+    const char* outfile_tmp = "/tmp/config.tmp.tmp";
+    const char* outfile = "/tmp/config.tmp";
+@@ -143,26 +159,36 @@ meraki_notify(struct proto *P, rtable *src_table, net *n, rte *new, rte *old, ea
+ #endif
+            is_bgp_route = 0;
+            if (sscanf(e->attrs->src->proto->name, "peer%u", &peer_num) > 0) {
++               get_bgp_source_key(e, source_key, BGP_SOURCE_KEY_LEN, 'I');
+                if (0 > fprintf(out,
+                            "route%u:subnet %s/%2d\n"
+                            "route%u:type l3_vpn\n"
+-                           "route%u:l3_vpn_peer_num %u\n",
++                           "route%u:l3_vpn_peer_num %u\n"
++                           "route%u:source src_bgp\n"
++                           "route%u:source_key %s\n",
+                            route_count, ip_buf, n->n.pxlen,
+                            route_count,
+-                           route_count, peer_num)) {
++                           route_count, peer_num,
++                           route_count,
++                           route_count, source_key)) {
+                    log("failed to write to %s!", outfile_tmp);
+                }
+                route_count++;
+                is_bgp_route = 1;
+            } else if (sscanf(e->attrs->src->proto->name, "neighbor%u", &peer_num) > 0) {
++               get_bgp_source_key(e, source_key, BGP_SOURCE_KEY_LEN, 'E');
+                if (0 > fprintf(out,
+                            "route%u:subnet %s/%2d\n"
+                            "route%u:type static\n"
+                            "route%u:static_gateway_num %u\n"
++                           "route%u:source src_bgp\n"
++                           "route%u:source_key %s\n"
+                            "vpn_joined_subnet%u:subnet %s/%2d\n",
+                            route_count, ip_buf, n->n.pxlen,
+                            route_count,
+                            route_count, peer_num,
++                           route_count,
++                           route_count, source_key,
+                            route_count, ip_buf, n->n.pxlen)) {
+                    log("failed to write to %s!", outfile_tmp);
+                }
+@@ -175,11 +201,12 @@ meraki_notify(struct proto *P, rtable *src_table, net *n, rte *new, rte *old, ea
+                            "{ \"prefix\" : \"%s\", "
+                            "\"prefix_len\" : %d, "
+                            "\"nexthops\" : [ "
+-                           "{\"src\" : \"BGP\",",
+-                           ip_buf, n->n.pxlen)) {
++                           "{\"src\" : \"BGP\","
++                           "\"source_key\" : \"%s\", ",
++                           ip_buf, n->n.pxlen, source_key)) {
+                    log("failed to write to %s!", info_outfile_tmp);
+                }
+-               collect_bgp_info(e, info_out, info_outfile_tmp);
++               write_bgp_info(e, info_out, info_outfile_tmp);
+                if (0 > fprintf(info_out, " }] }\n,")) {
+                    log("failed to write to %s!", info_outfile_tmp);
+                }
+-- 
+2.22.0
+

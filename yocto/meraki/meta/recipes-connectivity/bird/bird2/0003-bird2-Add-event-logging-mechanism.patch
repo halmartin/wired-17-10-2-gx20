@@ -1,0 +1,159 @@
+From 85e0dbb731ddd1cb4ab4343b327d30aee5223b13 Mon Sep 17 00:00:00 2001
+From: Bashar Mohd <basharm@meraki.com>
+Date: Fri, 10 Dec 2021 08:51:35 -0800
+Subject: [PATCH] bird2-Add-event-logging-mechanism
+
+This change adds the ability to write to the event log from BIRD2 and
+is an adaptation from 0008-bird-Add-event-logging-mechanism.patch for
+BIRD1.
+---
+ conf/conf.h    |  1 +
+ lib/Makefile   |  2 +-
+ lib/eventlog.c | 51 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ lib/eventlog.h | 27 ++++++++++++++++++++++++++
+ nest/config.Y  |  7 +++++++
+ 5 files changed, 87 insertions(+), 1 deletion(-)
+ create mode 100644 lib/eventlog.c
+ create mode 100644 lib/eventlog.h
+
+diff --git a/conf/conf.h b/conf/conf.h
+index 21dc3fa1..8bfa8014 100644
+--- a/conf/conf.h
++++ b/conf/conf.h
+@@ -28,6 +28,7 @@ struct config {
+ 
+   int mrtdump_file;			/* Configured MRTDump file (sysdep, fd in unix) */
+   char *syslog_name;			/* Name used for syslog (NULL -> no syslog) */
++  char *eventlog_filename;		/* File name for event log data */
+   struct rtable_config *def_tables[NET_MAX]; /* Default routing tables for each network */
+   struct iface_patt *router_id_from;	/* Configured list of router ID iface patterns */
+ 
+diff --git a/lib/Makefile b/lib/Makefile
+index 18816bb3..bec41257 100644
+--- a/lib/Makefile
++++ b/lib/Makefile
+@@ -1,4 +1,4 @@
+-src := bitops.c checksum.c event.c flowspec.c idm.c ip.c lists.c mac.c md5.c mempool.c net.c patmatch.c printf.c resource.c sha1.c sha256.c sha512.c slab.c slists.c strtoul.c tbf.c timer.c xmalloc.c
++src := bitops.c checksum.c event.c eventlog.c flowspec.c idm.c ip.c lists.c mac.c md5.c mempool.c net.c patmatch.c printf.c resource.c sha1.c sha256.c sha512.c slab.c slists.c strtoul.c tbf.c timer.c xmalloc.c
+ obj := $(src-o-files)
+ $(all-daemon)
+ 
+diff --git a/lib/eventlog.c b/lib/eventlog.c
+new file mode 100644
+index 00000000..c5110ad9
+--- /dev/null
++++ b/lib/eventlog.c
+@@ -0,0 +1,52 @@
++/*
++ *  BIRD -- Event log
++ *
++ *  (c) 2022 Cisco Systems, Inc.
++ *
++ *  This program is free software; you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License as published by
++ *  the Free Software Foundation; either version 2 of the License, or
++ *  (at your option) any later version.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program; if not, write to the Free Software
++ *  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
++ *
++ */
++
++#include <stdio.h>
++#include <nest/bird.h>
++#include <conf/conf.h>
++#include <lib/birdlib.h>
++#include <lib/eventlog.h>
++#include <lib/string.h>
++#include <errno.h>
++
++void log_event(const char* type, const char* fmt, ...)
++{
++    if (!config->eventlog_filename) {
++        return;
++    }
++
++    FILE* f = fopen(config->eventlog_filename, "w");
++    if (!f) {
++        log_msg(L_ERR "Unable to open event log file \"%s\", error %d", config->eventlog_filename, errno);
++        return;
++    }
++
++    buffer buf;
++    LOG_BUFFER_INIT(buf);
++
++    va_list args;
++    va_start(args, fmt);
++    buffer_vprint(&buf, fmt, args);
++    va_end(args);
++
++    fprintf(f, "%s \"%s\" \"\"", type, buf.start);
++    fclose(f);
++}
+diff --git a/lib/eventlog.h b/lib/eventlog.h
+new file mode 100644
+index 00000000..31dab908
+--- /dev/null
++++ b/lib/eventlog.h
+@@ -0,0 +1,27 @@
++/*
++ *  BIRD -- Event log
++ *
++ *  (c) 2022 Cisco Systems, Inc.
++ *
++ *  This program is free software; you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License as published by
++ *  the Free Software Foundation; either version 2 of the License, or
++ *  (at your option) any later version.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program; if not, write to the Free Software
++ *  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
++ *
++ */
++
++#ifndef _BIRD_EVENTLOG_H_
++#define _BIRD_EVENTLOG_H_
++
++void log_event(const char* type, const char* fmt, ...);
++
++#endif
+diff --git a/nest/config.Y b/nest/config.Y
+index c62501a3..55c6f0ac 100644
+--- a/nest/config.Y
++++ b/nest/config.Y
+@@ -75,6 +75,7 @@ CF_KEYWORDS(BGP, PASSWORDS, DESCRIPTION, SORTED)
+ CF_KEYWORDS(RELOAD, IN, OUT, MRTDUMP, MESSAGES, RESTRICT, MEMORY, IGP_METRIC, CLASS, DSCP)
+ CF_KEYWORDS(TIMEFORMAT, ISO, SHORT, LONG, ROUTE, PROTOCOL, BASE, LOG, S, MS, US)
+ CF_KEYWORDS(GRACEFUL, RESTART, WAIT, MAX, FLUSH, AS)
++CF_KEYWORDS(EVENT, LOG)
+ 
+ /* For r_args_channel */
+ CF_KEYWORDS(IPV4, IPV4_MC, IPV4_MPLS, IPV6, IPV6_MC, IPV6_MPLS, IPV6_SADR, VPN4, VPN4_MC, VPN4_MPLS, VPN6, VPN6_MC, VPN6_MPLS, ROA4, ROA6, FLOW4, FLOW6, MPLS, PRI, SEC)
+@@ -124,6 +125,12 @@ idval:
+    }
+  ;
+ 
++conf: evtlog ;
++
++evtlog:
++   EVENT LOG TEXT ';' { new_config->eventlog_filename = $3; }
++   ;
++
+ conf: gr_opts ;
+ 
+ gr_opts: GRACEFUL RESTART WAIT expr ';' { new_config->gr_wait = $4; } ;
+-- 
+2.34.1
+

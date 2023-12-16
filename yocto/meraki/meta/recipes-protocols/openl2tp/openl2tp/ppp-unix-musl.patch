@@ -1,0 +1,13 @@
+--- a/plugins/ppp_unix.c	2018-11-07 20:32:24.746478145 -0800
++++ b/plugins/ppp_unix.c	2018-11-07 20:49:36.140644554 -0800
+@@ -25,6 +25,10 @@
+  * does define IFF_LOWER_UP et al.
+  */
+ #define __UAPI_DEF_IF_NET_DEVICE_FLAGS_LOWER_UP_DORMANT_ECHO 0
++#define __UAPI_DEF_IF_NET_DEVICE_FLAGS 0
++#define __UAPI_DEF_IF_IFCONF 0
++#define __UAPI_DEF_IF_IFREQ 0
++#define __UAPI_DEF_IF_IFMAP 0
+ 
+ #include <unistd.h>
+ #include <fcntl.h>

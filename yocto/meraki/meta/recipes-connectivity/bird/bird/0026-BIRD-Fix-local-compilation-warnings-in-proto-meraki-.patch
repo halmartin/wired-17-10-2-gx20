@@ -1,0 +1,25 @@
+diff --git a/proto/meraki/meraki.c b/proto/meraki/meraki.c
+index 628c85fc..685c3f6e 100644
+--- a/proto/meraki/meraki.c
++++ b/proto/meraki/meraki.c
+@@ -115,7 +115,7 @@ get_bgp_source_key(rte *e, char* source_key, int len, char bgp_type)
+ }
+ 
+ static void
+-meraki_notify(struct proto *P, rtable *src_table, net *n, rte *new, rte *old, ea_list *attrs)
++meraki_notify(struct proto *P, rtable *src_table, net *n, rte *new UNUSED, rte *old UNUSED, ea_list *attrs UNUSED)
+ {
+    unsigned peer_num, route_count = BIRD_EXPORTED_ROUTE_BEGIN;
+    char ip_buf[STD_ADDRESS_P_LENGTH], source_key[BGP_SOURCE_KEY_LEN];
+@@ -269,7 +269,7 @@ meraki_start(struct proto *P)
+ }
+ 
+ static int
+-meraki_reconfigure(struct proto *P, struct proto_config *C)
++meraki_reconfigure(struct proto *P UNUSED, struct proto_config *C UNUSED)
+ {
+     log("meraki_config noop reconfigure");
+     return 1;
+-- 
+2.22.0
+

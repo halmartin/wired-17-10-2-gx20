@@ -1,0 +1,28 @@
+From a1b080c63146429a20866787fb0fde554b515cc1 Mon Sep 17 00:00:00 2001
+From: cliff <cliff@meraki.com>
+Date: Tue, 10 Mar 2009 01:44:11 +0000
+Subject: [PATCH]     udhcpc: request interface MTU parameter
+
+    My reading of the dhcp RFC says that this should not ever be
+    necessary, but my ubuntu laptop includes this in its DHCP
+    DISCOVER/REQUEST packets, so we may as well try and match.
+---
+ networking/udhcp/common.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/networking/udhcp/common.c b/networking/udhcp/common.c
+index 16bf69707..2ee1972b0 100644
+--- a/networking/udhcp/common.c
++++ b/networking/udhcp/common.c
+@@ -36,7 +36,7 @@ const struct dhcp_optflag dhcp_optflags[] = {
+ 	{ OPTION_IP                               , 0x10 }, /* DHCP_SWAP_SERVER   */
+ 	{ OPTION_STRING                           , 0x11 }, /* DHCP_ROOT_PATH     */
+ 	{ OPTION_U8                               , 0x17 }, /* DHCP_IP_TTL        */
+-	{ OPTION_U16                              , 0x1a }, /* DHCP_MTU           */
++	{ OPTION_U16                  | OPTION_REQ, 0x1a }, /* DHCP_MTU           */
+ //TODO: why do we request DHCP_BROADCAST? Can't we assume that
+ //in the unlikely case it is different from typical N.N.255.255,
+ //server would let us know anyway?
+-- 
+2.22.0
+

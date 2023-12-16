@@ -1,0 +1,87 @@
+diff --git a/sysdep/click/krt.c b/sysdep/click/krt.c
+index 2169396e..445916a7 100644
+--- a/sysdep/click/krt.c
++++ b/sysdep/click/krt.c
+@@ -143,6 +143,7 @@ krt_capable(rte *e)
+     case RTD_DEVICE:
+         if (a->iface == NULL)
+             return 0;
++    case RTD_MULTIPATH:
+         break;
+     default:
+         return 0;
+@@ -212,6 +213,19 @@ krt_import_control(struct proto *p, rte **new, ea_list **attrs, struct linpool *
+   return 0;
+ }
+ 
++/**
++ * Requires: 'route' is non NULL.
++ *
++ * Returns a non-zero value if 'route' is a multipath route (multiple next hops
++ * exist for a given destination), 0 otherwise.
++ */
++static int
++route_is_multipath(const rte *route)
++{
++    return route->attrs->dest == RTD_MULTIPATH
++           && route->attrs->nexthops != NULL;
++}
++
+ static void
+ write_route_to_click(const struct proto *p,
+         const struct click_route_info *route_info,
+@@ -248,9 +262,9 @@ write_route_to_click(const struct proto *p,
+             prefix_str, net->n.pxlen, gateway_str, route_info->ospf_src,
+             route_info->vlan);
+ 
+-    int ret = snprintf(cbuf, MERAKI_CLICK_COMMAND_SIZE, "%s/%d %s %d %s",
++    int ret = snprintf(cbuf, MERAKI_CLICK_COMMAND_SIZE, "%s/%d %s %d %s %d",
+             prefix_str, net->n.pxlen, gateway_str, route_info->vlan,
+-            route_info->ospf_src);
++            route_info->ospf_src, route_info->multipath);
+     if (ret > MERAKI_CLICK_COMMAND_SIZE) {
+         log(L_ERR "%s: Command too long: click handler \"%s\", error: %m",
+             p->name, click_handler, cbuf);
+@@ -279,9 +293,24 @@ push_route_info_to_click(const struct proto *p, const net *net, const rte *route
+     memset(&route_info, 0, sizeof(route_info));
+     route_info.net = net;
+     route_info.ospf_src = ospf_src;
+-    route_info.gateway = route->attrs->gw;
+-    route_info.vlan = route->attrs->iface->index;
+-    write_route_to_click(p, &route_info, action);
++
++    if (route_is_multipath(route)) {
++        log(L_WARN "%s: Multiple paths available", p->name);
++        route_info.multipath = 1;
++        const struct mpnh *nexthop = route->attrs->nexthops;
++        if (!nexthop)
++            log(L_ERR "%s: Multipath route does not have Next Hops", p->name);
++        for (; nexthop; nexthop = nexthop->next) {
++            route_info.gateway = nexthop->gw;
++            route_info.vlan = nexthop->iface->index;
++            write_route_to_click(p, &route_info, action);
++        }
++    } else {
++        route_info.multipath = 0;
++        route_info.gateway = route->attrs->gw;
++        route_info.vlan = route->attrs->iface->index;
++        write_route_to_click(p, &route_info, action);
++    }
+ }
+ 
+ static void
+diff --git a/sysdep/click/krt.h b/sysdep/click/krt.h
+index 445a0e81..825b13cf 100644
+--- a/sysdep/click/krt.h
++++ b/sysdep/click/krt.h
+@@ -51,6 +51,7 @@ struct click_route_info {
+     ip_addr gateway;
+     unsigned vlan;
+     char *ospf_src;
++    int multipath;
+ };
+ 
+ extern struct proto_config* krt_init_config(int class);
+-- 
+2.22.0
+

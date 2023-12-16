@@ -1,0 +1,62 @@
+diff --git a/proto/ospf/neighbor.c b/proto/ospf/neighbor.c
+index 533c72b3..fd8a2f00 100644
+--- a/proto/ospf/neighbor.c
++++ b/proto/ospf/neighbor.c
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include "ospf.h"
++#include "lib/eventlog.h"
+ 
+ // This should be updated every time ospf_ns is updated.
+ char *ospf_ns_json[] = { "down",
+@@ -169,9 +170,19 @@ ospf_neigh_chstate(struct ospf_neighbor *n, u8 state)
+     p->padj--;
+ 
+   /* Increase number of full adjacencies */
+-  if (state == NEIGHBOR_FULL)
++  if (state == NEIGHBOR_FULL) {
+     ifa->fadj++;
+ 
++#ifdef MERAKI_CLICK
++      /* The click sysdep component uses VLANs as interface indices for broadcast interfaces */
++      if (ifa->type == OSPF_IT_BCAST)
++          log_event("ospf_neighbor_full", "ip='%I' router_id='%R' vlan='%u'", n->ip, n->rid, ifa->iface_id);
++      else
++#endif
++          log_event("ospf_neighbor_full", "ip='%I' router_id='%R'", n->ip, n->rid);
++
++  }
++
+   /* Decrease number of full adjacencies */
+   if (old_state == NEIGHBOR_FULL)
+     ifa->fadj--;
+@@ -203,6 +214,25 @@ ospf_neigh_chstate(struct ospf_neighbor *n, u8 state)
+   if (state > NEIGHBOR_EXSTART)
+     n->myimms &= ~DBDES_I;
+ 
++  if (state == NEIGHBOR_INIT) {
++#ifdef MERAKI_CLICK
++    if (ifa->type == OSPF_IT_BCAST)
++        log_event("ospf_neighbor_init", "ip='%I' router_id='%R' vlan='%u'", n->ip, n->rid, ifa->iface_id);
++    else
++#endif
++        log_event("ospf_neighbor_init", "ip='%I' router_id='%R'", n->ip, n->rid);
++  }
++  if (state == NEIGHBOR_DOWN) {
++#ifdef MERAKI_CLICK
++    if (ifa->type == OSPF_IT_BCAST)
++        log_event("ospf_neighbor_down", "ip='%I' router_id='%R' vlan='%u'", n->ip, n->rid, ifa->iface_id);
++    else
++#endif
++        log_event("ospf_neighbor_down", "ip='%I' router_id='%R'", n->ip, n->rid);
++  }
++
++
++
+   /* Generate NeighborChange event if needed, see RFC 2328 9.2 */
+   if ((state == NEIGHBOR_2WAY) && (old_state < NEIGHBOR_2WAY))
+     ospf_iface_sm(ifa, ISM_NEICH);
+-- 
+2.22.0
+

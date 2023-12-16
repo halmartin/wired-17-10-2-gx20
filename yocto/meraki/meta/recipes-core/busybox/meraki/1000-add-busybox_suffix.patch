@@ -1,0 +1,65 @@
+From 324bf4fb6665a137384dc0ca438e1c215a93475c Mon Sep 17 00:00:00 2001
+From: pallas <pallas@meraki.com>
+Date: Tue, 28 Aug 2012 21:20:38 +0000
+Subject: [PATCH]     openwrt/busybox: add BUSYBOX_SUFFIX
+
+    This variable allows one to change the name of the busybox binary. This is
+    useful in the case where we want to build both statically and dynamically
+    linked version of busybox.  To do so, build normally and then
+
+            make BUSYBOX_SUFFIX=-static EXTRA_LDFLAGS=-static
+---
+ Makefile | 12 +++++++-----
+ 1 file changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index fbbae4b2a..3f47a65e6 100644
+--- a/Makefile
++++ b/Makefile
+@@ -528,11 +528,13 @@ else
+ include/autoconf.h: ;
+ endif
+ 
++export BUSYBOX_NAME = busybox$(BUSYBOX_SUFFIX)
++
+ # The all: target is the default when no target is given on the
+ # command line.
+ # This allow a user to issue only 'make' to build a kernel including modules
+ # Defaults busybox but it is usually overridden in the arch makefile
+-all: busybox doc
++all: $(BUSYBOX_NAME) doc
+ 
+ # arch Makefile may override CC so keep this after arch Makefile is included
+ #bbox# NOSTDINC_FLAGS += -nostdinc -isystem $(shell $(CC) -print-file-name=include)
+@@ -714,16 +716,16 @@ debug_kallsyms: .tmp_map$(last_kallsyms)
+ endif # ifdef CONFIG_KALLSYMS
+ 
+ # busybox image - including updated kernel symbols
+-busybox_unstripped: $(busybox-all) FORCE
++$(BUSYBOX_NAME)_unstripped: $(busybox-all) FORCE
+ 	$(call if_changed_rule,busybox__)
+ 	$(Q)rm -f .old_version
+ 
+-busybox: busybox_unstripped
++$(BUSYBOX_NAME): $(BUSYBOX_NAME)_unstripped
+ ifeq ($(SKIP_STRIP),y)
+ 	$(Q)cp $< $@
+ else
+ 	$(Q)$(STRIP) -s --remove-section=.note --remove-section=.comment \
+-		busybox_unstripped -o $@
++		$< -o $@
+ # strip is confused by PIE executable and does not set exec bits
+ 	$(Q)chmod a+x $@
+ endif
+@@ -1237,7 +1239,7 @@ endif #ifeq ($(mixed-targets),1)
+ 
+ PHONY += checkstack
+ checkstack:
+-	$(OBJDUMP) -d busybox $$(find . -name '*.ko') | \
++	$(OBJDUMP) -d $(BUSYBOX_NAME) $$(find . -name '*.ko') | \
+ 	$(PERL) $(src)/scripts/checkstack.pl $(ARCH)
+ 
+ kernelrelease:
+-- 
+2.22.0
+

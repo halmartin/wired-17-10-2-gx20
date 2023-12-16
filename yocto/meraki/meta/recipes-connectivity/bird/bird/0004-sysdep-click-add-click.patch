@@ -1,0 +1,1351 @@
+diff --git a/sysdep/click/kif.Y b/sysdep/click/kif.Y
+new file mode 100644
+index 00000000..1d9a0fae
+--- /dev/null
++++ b/sysdep/click/kif.Y
+@@ -0,0 +1,128 @@
++/*
++ *  Meraki BIRD Kernel Syncer Configuration
++ *
++ *  Copyright (C) 2014--2017 Cisco Systems, Inc.
++ *
++ *  This program is free software; you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License as published by
++ *  the Free Software Foundation; either version 2 of the License, or
++ *  (at your option) any later version.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program; if not, write to the Free Software
++ *  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
++ *
++ */
++
++CF_HDR
++
++#include "lib/kif.h"
++#include "nest/iface.h"
++
++CF_DEFINES
++
++static struct kif_config* this_kif;
++static struct kif_vlan_config* this_vlan;
++
++static void
++kif_interface_finish(void)
++{
++    struct kif_vlan_config* vc;
++
++    if (this_vlan->vid == 0)
++        cf_error("VID not specified for interface \"%s\"!", this_vlan->name);
++
++    if (ipa_zero(this_vlan->addr.ip))
++        cf_error("Interface \"%s\" has no addresses!", this_vlan->name);
++
++    WALK_LIST(vc, this_kif->vlans) {
++        if (strcmp(this_vlan->name, vc->name) == 0)
++            cf_error("Duplicate VLAN interface name \"%s\" detected!", vc->name);
++
++        if (this_vlan->vid == vc->vid)
++            cf_error("Duplicate VID %hu detected!", vc->vid);
++    }
++    add_tail(&this_kif->vlans, NODE this_vlan);
++}
++
++
++CF_DECLS
++
++CF_KEYWORDS(ADDR, VLAN, INTERFACE, VID, MTU, PROXY, DEVICE, HOST, PORT, SOCKETS, ADD, REMOVE, MEMBERSHIP, HANDLER)
++
++CF_GRAMMAR
++
++CF_ADDTO(proto, kif_proto)
++
++kif_proto_start: proto_start DEVICE {
++    this_proto = kif_init_config($1);
++    this_kif = (struct kif_config*)this_proto;
++    init_list(&this_kif->vlans);
++}
++ ;
++
++kif_proto_item:
++    proto_item
++    | kif_interface
++    | PROXY DEVICE TEXT { this_kif->proxy_device = $3; }
++    | PROXY HOST TEXT { this_kif->proxy_host = $3; }
++    | PROXY PORT expr { this_kif->proxy_port = $3; }
++    | ADD MEMBERSHIP HANDLER TEXT { this_kif->add_memb_handler = $4; }
++    | REMOVE MEMBERSHIP HANDLER TEXT { this_kif->remove_memb_handler = $4; }
++ ;
++
++kif_proto_opts:
++    /* empty */
++    | kif_proto_opts kif_proto_item ';'
++
++kif_proto:
++    kif_proto_start proto_name '{' kif_proto_opts '}'
++
++
++kif_interface: kif_interface_start '{' kif_interface_opts '}' { kif_interface_finish(); }
++ ;
++
++kif_interface_opts:
++    | kif_interface_opts kif_interface_item ';'
++ ;
++
++
++kif_interface_start: VLAN INTERFACE TEXT {
++    this_vlan = cfg_allocz(sizeof(struct iface));
++    this_vlan->name = $3;
++    this_vlan->mtu = 1500;
++}
++ ;
++
++kif_interface_item:
++    VID expr {
++        if ($2 <= 0 || $2 >= 4095) cf_error("Invalid VID %d", $2);
++        this_vlan->vid = $2;
++    }
++    | ADDR ipa pxlen {
++        if (ipa_nonzero(this_vlan->addr.ip))
++            cf_error("Only one address per VLAN permitted.");
++
++        if (ipa_zero($2) || $3 == 0)
++            cf_error("Non-null address required for interface %s!", this_vlan->name);
++
++        this_vlan->addr.ip = $2;
++        this_vlan->addr.pxlen = $3;
++        this_vlan->addr.prefix = ipa_and(this_vlan->addr.ip, ipa_mkmask(this_vlan->addr.pxlen));
++        this_vlan->addr.brd = ipa_or(this_vlan->addr.prefix, ipa_not(ipa_mkmask(this_vlan->addr.pxlen)));
++        this_vlan->addr.scope = IADDR_HOST | SCOPE_UNIVERSE;
++    }
++    | MTU expr {
++        if ($2 < 1500 || $2 > 0xFFFF) cf_error("Invalid MTU");
++        this_vlan->mtu = (u16)$2;
++    }
++ ;
++
++CF_CODE
++
++CF_END
+diff --git a/sysdep/click/kif.c b/sysdep/click/kif.c
+new file mode 100644
+index 00000000..b73bbf6f
+--- /dev/null
++++ b/sysdep/click/kif.c
+@@ -0,0 +1,230 @@
++/*
++ *  BIRD -- Meraki/Click Interface Synchronization
++ *
++ *  (c) 1998--2000 Martin Mares <mj@ucw.cz>
++ *  (c) 2014--2017 Cisco Systems, Inc.
++ *
++ *  This program is free software; you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License as published by
++ *  the Free Software Foundation; either version 2 of the License, or
++ *  (at your option) any later version.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program; if not, write to the Free Software
++ *  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
++ *
++ */
++
++#include <stdbool.h>
++#include "nest/bird.h"
++#include "nest/iface.h"
++#include "nest/route.h"
++#include "nest/protocol.h"
++#include "filter/filter.h"
++#include "conf/conf.h"
++#include "lib/string.h"
++#include "lib/socket.h"
++
++#include "unix.h"
++#include "kif.h"
++#include "sysio.h"
++#include <sockproxy.h>
++
++static bool defined = false;
++
++static bool
++kif_populate_interfaces(struct proto* p, struct kif_config* cf)
++{
++    struct kif_vlan_config* vc;
++    struct iface iface;
++    struct sockproxy_cfg cfg = {0};
++
++    int blksize = sizeof(struct sockproxy_iface);
++    linpool* lp = lp_new(p->pool, blksize);
++    if (!lp)
++        return false;
++
++    cfg.num_ifaces = 0;
++
++    WALK_LIST(vc, cf->vlans) {
++        cfg.num_ifaces++;
++    }
++
++    if (cfg.num_ifaces) {
++        cfg.ifaces = lp_allocz(lp, sizeof(struct sockproxy_iface) * cfg.num_ifaces);
++        if (cfg.ifaces == NULL) {
++            rfree(lp);
++            return false;
++        }
++    } else
++        cfg.ifaces = NULL;
++
++    struct sockproxy_iface* spif_idx = cfg.ifaces;
++
++    if_start_update();
++
++    WALK_LIST(vc, cf->vlans) {
++        memset(&iface, 0, sizeof(iface));
++
++        strncpy(iface.name, vc->name, sizeof(iface.name)-1);
++        strncpy(spif_idx->name, vc->name, sizeof(spif_idx->name)-1);
++        iface.flags = IF_ADMIN_UP | IF_LINK_UP | IF_BROADCAST | IF_MULTICAST | IF_MULTIACCESS;
++        iface.mtu = vc->mtu;
++        iface.index = vc->vid;
++        spif_idx->vid = vc->vid;
++        if_update(&iface);
++
++        struct ifa addr = vc->addr;
++        struct iface* stored_iface = if_find_by_index(vc->vid);
++        addr.iface = stored_iface;
++        ifa_update(&addr);
++        set_inaddr(&spif_idx->addr, addr.ip);
++        spif_idx++;
++    }
++
++    cfg.proxy_device = cf->proxy_device;
++    cfg.proxy_host = cf->proxy_host;
++    cfg.proxy_port = cf->proxy_port;
++    cfg.add_membership_handler = cf->add_memb_handler;
++    cfg.del_membership_handler = cf->remove_memb_handler;
++    CSP_set_config(&cfg);
++
++    if_end_update();
++    rfree(lp);
++
++    return true;
++}
++
++static struct proto *
++kif_init(struct proto_config *c)
++{
++    return proto_new(c, sizeof(struct proto));
++}
++
++static void
++kif_preconfig(struct protocol* p, struct config* c)
++{
++    defined = false;
++}
++
++static int
++kif_start(struct proto *p)
++{
++    struct kif_config* kif_cf = (struct kif_config*)p->cf;
++
++    if (!kif_populate_interfaces(p, kif_cf))
++        return PS_DOWN;
++
++    return PS_UP;
++}
++
++static int
++kif_shutdown(struct proto *p)
++{
++    if_flush_ifaces(p);
++
++    return PS_DOWN;
++}
++
++/**
++ * Test two strings for equality, handling null pointers.
++ */
++static inline int
++strings_are_equal(const char *p, const char *q)
++{
++    return (!p && !q) || (p && q && !strcmp(p, q));
++}
++
++static int
++kif_reconfigure(struct proto *p, struct proto_config *new)
++{
++    struct kif_config *kif_cf_old = (struct kif_config*) p->cf;
++    struct kif_config *kif_cf_new = (struct kif_config*) new;
++    struct kif_vlan_config *vc;
++    int num_old_itfs = 0;
++    WALK_LIST(vc, kif_cf_old->vlans) {
++        num_old_itfs++;
++        bool found = false;
++        struct kif_vlan_config *vc_new;
++        WALK_LIST(vc_new, kif_cf_new->vlans) {
++            if (strcmp(vc->name, vc_new->name) == 0 &&
++                vc->vid == vc_new->vid &&
++                vc->mtu == vc_new->mtu &&
++                vc->addr.ip == vc_new->addr.ip &&
++                vc->addr.pxlen == vc_new->addr.pxlen)
++                found = true;
++        }
++
++        if (!found)
++            return 0;
++    }
++
++    int num_new_itfs = 0;
++    WALK_LIST(vc, kif_cf_new->vlans) {
++        num_new_itfs++;
++    }
++
++    if (num_old_itfs != num_new_itfs ||
++        !strings_are_equal(kif_cf_old->proxy_device, kif_cf_new->proxy_device) ||
++        !strings_are_equal(kif_cf_old->proxy_host, kif_cf_new->proxy_host) ||
++        kif_cf_old->proxy_port != kif_cf_new->proxy_port ||
++        !strings_are_equal(kif_cf_old->add_memb_handler, kif_cf_new->add_memb_handler) ||
++        !strings_are_equal(kif_cf_old->remove_memb_handler, kif_cf_new->remove_memb_handler))
++        return 0;
++
++    return 1;
++}
++
++static void
++kif_copy_config(struct proto_config *dest, struct proto_config *src)
++{
++    struct kif_config *d = (struct kif_config *) dest;
++    struct kif_config *s = (struct kif_config *) src;
++
++    proto_copy_rest(dest, src, sizeof(struct kif_config));
++
++    init_list(&d->vlans);
++    cfg_copy_list(&d->vlans, &s->vlans, sizeof(struct kif_vlan_config));
++}
++
++struct protocol proto_click_iface = {
++    .name =            "Device",
++    .template =        "device%d",
++    .preference =      DEF_PREF_DIRECT,
++    .config_size =     sizeof(struct kif_config),
++    .preconfig =       kif_preconfig,
++    .init =            kif_init,
++    .start =           kif_start,
++    .shutdown =        kif_shutdown,
++    .reconfigure =     kif_reconfigure,
++    .copy_config =     kif_copy_config
++};
++
++
++struct proto_config*
++kif_init_config(int class)
++{
++    if (defined)
++        cf_error("Kernel device protocol already defined");
++
++    struct kif_config* cf;
++    cf = (struct kif_config*)proto_config_new(&proto_click_iface, class);
++
++    if (!cf)
++        cf_error("Unable to create krt_config");
++
++    defined = true;
++    return (struct proto_config*)cf;
++}
++
++struct ifa *
++kif_choose_primary(struct iface *i)
++{
++    return HEAD(i->addrs);
++}
++
+diff --git a/sysdep/click/kif.h b/sysdep/click/kif.h
+new file mode 100644
+index 00000000..5dee50eb
+--- /dev/null
++++ b/sysdep/click/kif.h
+@@ -0,0 +1,51 @@
++/*
++ *  BIRD -- Meraki Kernel Route Syncer
++ *
++ *  (c) 1998--2000 Martin Mares <mj@ucw.cz>
++ *  (c) 2014--2017 Cisco Systems, Inc.
++ *
++ *  This program is free software; you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License as published by
++ *  the Free Software Foundation; either version 2 of the License, or
++ *  (at your option) any later version.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program; if not, write to the Free Software
++ *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++
++#ifndef _BIRD_MERAKI_KIF_H_
++#define _BIRD_MERAKI_KIF_H_
++
++#include "lib/lists.h"
++#include "lib/ip.h"
++
++extern struct protocol proto_click_iface;
++
++struct kif_config {
++    struct proto_config c;
++    list vlans;
++    char* proxy_device;
++    char* proxy_host;
++    u16   proxy_port;
++    char* add_memb_handler;
++    char* remove_memb_handler;
++};
++
++
++struct kif_vlan_config {
++    node n;
++    char* name;
++    u16 vid;
++    u16 mtu;
++    struct ifa addr;
++};
++
++extern struct proto_config* kif_init_config(int class);
++
++#endif
+diff --git a/sysdep/click/krt.Y b/sysdep/click/krt.Y
+new file mode 100644
+index 00000000..8f3854f6
+--- /dev/null
++++ b/sysdep/click/krt.Y
+@@ -0,0 +1,47 @@
++/*
++ *	BIRD -- Click Kernel Syncer Configuration
++ *
++ *	(c) 1998--2000 Martin Mares <mj@ucw.cz>
++ *      (c) 2014--2017 Cisco Systems, Inc.
++ *
++ *	Can be freely distributed and used under the terms of the GNU GPL.
++ */
++
++CF_HDR
++
++#include "lib/krt.h"
++
++CF_DEFINES
++
++#define THIS_KRT ((struct krt_config *) this_proto)
++
++CF_DECLS
++
++CF_KEYWORDS(KERNEL, ROUTES, ADD, ROUTE, REMOVE, ROUTES, HANDLER, FLUSH)
++CF_KEYWORDS(REJECT, OVERLAPS, MAX, EVENT, TIMEOUT, DYNAMIC)
++
++CF_GRAMMAR
++
++/* Kernel syncer protocol */
++
++CF_ADDTO(proto, kern_proto '}')
++
++kern_proto_start: proto_start KERNEL { this_proto = krt_init_config($1); }
++ ;
++
++CF_ADDTO(kern_proto, kern_proto_start proto_name '{')
++CF_ADDTO(kern_proto, kern_proto proto_item ';')
++CF_ADDTO(kern_proto, kern_proto kern_item ';')
++
++kern_item:
++ ADD ROUTE HANDLER TEXT { THIS_KRT->add_handler = $4; }
++ | REMOVE ROUTE HANDLER TEXT { THIS_KRT->remove_handler = $4; }
++ | FLUSH ROUTES HANDLER TEXT { THIS_KRT->flush_handler = $4; }
++ | REJECT OVERLAPS { THIS_KRT->reject_overlaps = 1; }
++ | MAX DYNAMIC ROUTES expr { THIS_KRT->max_dynamic_routes = $4; }
++ | MAX ROUTES EVENT TIMEOUT expr { THIS_KRT->max_routes_event_timeout = $5; }
++ ;
++
++CF_CODE
++
++CF_END
+diff --git a/sysdep/click/krt.c b/sysdep/click/krt.c
+new file mode 100644
+index 00000000..f1619c13
+--- /dev/null
++++ b/sysdep/click/krt.c
+@@ -0,0 +1,411 @@
++/*
++ *  Meraki/Click BIRD route synchronizer
++ *
++ *  (c) 2014--2017 Cisco Systems, Inc.
++ *
++ *  This program is free software; you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License as published by
++ *  the Free Software Foundation; either version 2 of the License, or
++ *  (at your option) any later version.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program; if not, write to the Free Software
++ *  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
++ *
++ */
++#include <stdio.h>
++#include <stdbool.h>
++#include <string.h>
++#include "nest/bird.h"
++#include "nest/iface.h"
++#include "nest/route.h"
++#include "nest/protocol.h"
++#include "filter/filter.h"
++#include "conf/conf.h"
++#include "lib/string.h"
++#include "lib/ip.h"
++
++#include "unix.h"
++#include "krt.h"
++#include "sockproxy.h"
++
++static bool defined = false;
++
++void
++krt_io_init(void)
++{
++}
++
++#ifdef IPV6
++/*
++ *  Conversion of IPv6 address to presentation format and vice versa.
++ *  Heavily inspired by routines written by Paul Vixie for the BIND project
++ *  and of course by RFC 2373.
++ */
++
++static char *
++ip_ntop(ip_addr a, char *b)
++{
++  u16 words[8];
++  int bestpos, bestlen, curpos, curlen, i;
++
++  /* First of all, preprocess the address and find the longest run of zeros */
++  bestlen = bestpos = curpos = curlen = 0;
++  for(i=0; i<8; i++)
++    {
++      u32 x = a.addr[i/2];
++      words[i] = ((i%2) ? x : (x >> 16)) & 0xffff;
++      if (words[i])
++	curlen = 0;
++      else
++	{
++	  if (!curlen)
++	    curpos = i;
++	  curlen++;
++	  if (curlen > bestlen)
++	    {
++	      bestpos = curpos;
++	      bestlen = curlen;
++	    }
++	}
++    }
++  if (bestlen < 2)
++    bestpos = -1;
++
++  /* Is it an encapsulated IPv4 address? */
++  if (!bestpos &&
++      (bestlen == 5 && a.addr[2] == 0xffff ||
++       bestlen == 6))
++    {
++      u32 x = a.addr[3];
++      b += bsprintf(b, "::%s%d.%d.%d.%d",
++		    a.addr[2] ? "ffff:" : "",
++		    ((x >> 24) & 0xff),
++		    ((x >> 16) & 0xff),
++		    ((x >> 8) & 0xff),
++		    (x & 0xff));
++      return b;
++    }
++
++  /* Normal IPv6 formatting, compress the largest sequence of zeros */
++  for(i=0; i<8; i++)
++    {
++      if (i == bestpos)
++	{
++	  i += bestlen - 1;
++	  *b++ = ':';
++	  if (i == 7)
++	    *b++ = ':';
++	}
++      else
++	{
++	  if (i)
++	    *b++ = ':';
++	  b += bsprintf(b, "%x", words[i]);
++	}
++    }
++  *b = 0;
++  return b;
++}
++
++#else
++
++static char *
++ip_ntop(ip_addr a, char *b)
++{
++  u32 x = _I(a);
++
++  return b + bsprintf(b, "%d.%d.%d.%d",
++		      ((x >> 24) & 0xff),
++		      ((x >> 16) & 0xff),
++		      ((x >> 8) & 0xff),
++		      (x & 0xff));
++}
++
++#endif
++
++static int
++krt_capable(rte *e)
++{
++    rta *a = e->attrs;
++
++    if (a->cast != RTC_UNICAST)
++        return 0;
++
++    switch (a->dest)
++    {
++    case RTD_ROUTER:
++    case RTD_DEVICE:
++        if (a->iface == NULL)
++            return 0;
++        break;
++    default:
++        return 0;
++    }
++    return 1;
++}
++
++static int
++rte_is_ospf(rte* e)
++{
++    return (e->attrs->source == RTS_OSPF ||
++            e->attrs->source == RTS_OSPF_IA ||
++            e->attrs->source == RTS_OSPF_EXT1 ||
++            e->attrs->source == RTS_OSPF_EXT2);
++}
++
++static void
++krt_preconfig(struct protocol* p, struct config* c)
++{
++    defined = false;
++}
++
++static int
++krt_import_control(struct proto *p, rte **new, ea_list **attrs, struct linpool *pool)
++{
++  rte *e = *new;
++  struct krt_config* cf = (struct krt_config*)p->cf;
++  struct krt_proto* kp = (struct krt_proto*)p;
++
++  if (e->attrs->src->proto == p)
++      return -1;
++
++  if (!krt_capable(e))
++      return -1;
++
++  if (rte_is_ospf(e) && cf->reject_overlaps) {
++      struct iface* iface;
++      WALK_LIST(iface, iface_list) {
++          struct ifa* ifa;
++          WALK_LIST(ifa, iface->addrs) {
++              if (ifa->pxlen != e->net->n.pxlen &&
++                  net_in_net(e->net->n.prefix, e->net->n.pxlen,
++                             ifa->prefix, ifa->pxlen)) {
++                  return -1;
++              }
++          }
++      }
++  }
++
++  if (cf->max_dynamic_routes &&
++      kp->num_dynamic_routes >= cf->max_dynamic_routes &&
++      rte_is_ospf(e) &&
++      e->net->n.pxlen != 0 && // whitelist default route
++      !(e->net->n.flags & KRF_INSTALLED)) {
++      time_t current = time(NULL);
++      if (difftime(current, kp->max_routes_event_time) >= cf->max_routes_event_timeout) {
++          kp->max_routes_event_time = current;
++      }
++      return -1;
++  }
++
++  return 0;
++}
++
++static void
++write_route_to_click(const struct proto *p,
++        const struct click_route_info *route_info,
++        int action)
++{
++    const char *click_handler = NULL;
++    char cbuf[MERAKI_CLICK_COMMAND_SIZE + 1];
++    char prefix_str[STD_ADDRESS_P_LENGTH+1];
++    char gateway_str[STD_ADDRESS_P_LENGTH+1];
++
++    net *net = route_info->net;
++    ip_ntop(net->n.prefix, prefix_str);
++    ip_ntop(route_info->gateway, gateway_str);
++
++    /* Determine whether we're trying to add or remove a route */
++    struct krt_config* const config = (struct krt_config *)p->cf;
++    switch (action) {
++    case CLICK_ROUTE_ADD:
++        click_handler = config->add_handler;
++        break;
++    case CLICK_ROUTE_REMOVE:
++        click_handler = config->remove_handler;
++        break;
++    default:
++        bug("%s: Illegal Click route action: %d", action);
++    }
++
++    const char *action_str = action == CLICK_ROUTE_ADD ? "Adding" : "Removing";
++    log(L_TRACE "%s: %s route %s/%d %s %s (vlan %d)", p->name, action_str,
++            prefix_str, net->n.pxlen, gateway_str, route_info->ospf_src,
++            route_info->vlan);
++
++    int ret = snprintf(cbuf, MERAKI_CLICK_COMMAND_SIZE, "%s/%d %s %d %s",
++            prefix_str, net->n.pxlen, gateway_str, route_info->vlan,
++            route_info->ospf_src);
++    if (ret > MERAKI_CLICK_COMMAND_SIZE) {
++        log(L_ERR "%s: Command too long: click handler \"%s\", error: %m",
++            p->name, click_handler, cbuf);
++        return;
++    }
++
++    /* Push route info string to Click */
++    if (meraki_click_write(click_handler, cbuf) != 0) {
++        log(L_ERR "%s: Failed to write to route click handler \"%s\", error: %m",
++            p->name, click_handler);
++        return;
++    }
++}
++
++static void
++push_route_info_to_click(const struct proto *p, const net *net, const rte *route,
++        int action)
++{
++    char ospf_src[16] = "0.0.0.0";
++#ifdef CONFIG_OSPF
++    if (rte_is_ospf(route))
++        bsnprintf(ospf_src, sizeof(ospf_src), "%R", route->u.ospf.router_id);
++#endif
++
++    struct click_route_info route_info;
++    memset(&route_info, 0, sizeof(route_info));
++    route_info.net = net;
++    route_info.ospf_src = ospf_src;
++    route_info.gateway = route->attrs->gw;
++    route_info.vlan = route->attrs->iface->index;
++    write_route_to_click(p, &route_info, action);
++}
++
++static void
++krt_notify(struct proto *p, struct rtable *table, net *net,
++       rte *new, rte *old, struct ea_list *eattrs)
++{
++    struct krt_proto* kp = (struct krt_proto*)p;
++
++    if (config->shutdown)
++        return;
++
++    if (old && (net->n.flags & KRF_INSTALLED)) {
++        push_route_info_to_click(p, net, old, CLICK_ROUTE_REMOVE);
++        net->n.flags &= ~KRF_INSTALLED;
++        if (rte_is_ospf(old))
++            kp->num_dynamic_routes--;
++    }
++
++    if (new && !(net->n.flags & KRF_INSTALLED)) {
++        push_route_info_to_click(p, net, new, CLICK_ROUTE_ADD);
++        net->n.flags |= KRF_INSTALLED;
++        if (rte_is_ospf(new))
++            kp->num_dynamic_routes++;
++    }
++}
++
++static void
++krt_flush_click_routes(struct proto* p)
++{
++    struct krt_config* cf = (struct krt_config*)p->cf;
++
++    log(L_TRACE "%s: Flushing kernel routes", p->name);
++
++    /* Contents of write are unimportant */
++    if (meraki_click_write(cf->flush_handler, "true") !=0) {
++        log(L_ERR "%s: Failed to write to route flush handler \"%s\", error: %m",
++            p->name, cf->flush_handler);
++        return;
++    }
++}
++
++static void
++krt_flush_routes(struct proto* p)
++{
++    struct krt_proto* kp = (struct krt_proto*)p;
++
++    krt_flush_click_routes(p);
++    FIB_WALK(&p->table->fib, f) {
++        net* n = (net*)f;
++        n->n.flags &= ~KRF_INSTALLED;
++    }
++    FIB_WALK_END;
++    kp->num_dynamic_routes = 0;
++}
++
++
++static struct proto*
++krt_init(struct proto_config *c)
++{
++    struct proto *p = proto_new(c, sizeof(struct krt_proto));
++
++    p->accept_ra_types = RA_OPTIMAL;
++    p->import_control = krt_import_control;
++    p->rt_notify = krt_notify;
++
++    // In case we crashed and left some cruft in the click tables.
++    krt_flush_click_routes(p);
++
++    return p;
++}
++
++static int
++krt_start(struct proto *p)
++{
++    return PS_UP;
++}
++
++static int
++krt_shutdown(struct proto *p)
++{
++    krt_flush_routes(p);
++    return PS_DOWN;
++}
++
++static int
++krt_reconfigure(struct proto *p, struct proto_config *new)
++{
++    struct krt_config* cf = (struct krt_config*)p->cf;
++    struct krt_config* new_cf = (struct krt_config*)new;
++
++    /* If the dynamic route limit has changed, flush all routes and
++       repopulate while enforcing the new limit */
++    if (new_cf->max_dynamic_routes != cf->max_dynamic_routes) {
++        krt_flush_routes(p);
++        proto_request_feeding(p);
++    }
++
++    return 1;
++}
++
++static void
++krt_copy_config(struct proto_config *dest, struct proto_config *src)
++{
++    /* Shallow copy of everything */
++    proto_copy_rest(dest, src, sizeof(struct krt_config));
++}
++
++struct protocol proto_click_kernel = {
++    .name =         "Kernel",
++    .template =     "kernel%d",
++    .attr_class =   EAP_KRT,
++    .preference =   DEF_PREF_INHERITED,
++    .config_size =  sizeof(struct krt_config),
++    .preconfig =    krt_preconfig,
++    .init =         krt_init,
++    .start =        krt_start,
++    .shutdown =     krt_shutdown,
++    .reconfigure =  krt_reconfigure,
++    .copy_config =  krt_copy_config,
++};
++
++struct proto_config *
++krt_init_config(int class)
++{
++    if (defined)
++        cf_error("Kernel protocol already defined");
++
++    struct krt_config* cf;
++    cf = (struct krt_config*)proto_config_new(&proto_click_kernel, class);
++
++    if (!cf)
++        cf_error("Unable to create krt_config");
++
++    defined = true;
++    return (struct proto_config*)cf;
++}
+diff --git a/sysdep/click/krt.h b/sysdep/click/krt.h
+new file mode 100644
+index 00000000..445a0e81
+--- /dev/null
++++ b/sysdep/click/krt.h
+@@ -0,0 +1,81 @@
++/*
++ *  BIRD -- Meraki Kernel Route Syncer
++ *
++ *  (c) 1998--2000 Martin Mares <mj@ucw.cz>
++ *  (c) 2014--2017 Cisco Systems, Inc.
++ *
++ *  This program is free software; you can redistribute it and/or modify
++ *  it under the terms of the GNU General Public License as published by
++ *  the Free Software Foundation; either version 2 of the License, or
++ *  (at your option) any later version.
++ *
++ *  This program is distributed in the hope that it will be useful,
++ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
++ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ *  GNU General Public License for more details.
++ *
++ *  You should have received a copy of the GNU General Public License
++ *  along with this program; if not, write to the Free Software
++ *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++
++#ifndef _BIRD_MERAKI_KRT_H_
++#define _BIRD_MERAKI_KRT_H_
++
++#include <time.h>
++#include "nest/route.h"
++
++#define CLICK_ROUTE_ADD 1
++#define CLICK_ROUTE_REMOVE 2
++
++extern struct protocol proto_click_kernel;
++
++struct krt_config {
++    struct proto_config c;
++    char* add_handler;
++    char* remove_handler;
++    char* flush_handler;
++    int reject_overlaps;
++    int max_dynamic_routes;
++    int max_routes_event_timeout;
++};
++
++struct krt_proto {
++    struct proto p;
++    time_t max_routes_event_time;
++    int num_dynamic_routes;
++};
++
++struct click_route_info {
++    net *net;
++    ip_addr gateway;
++    unsigned vlan;
++    char *ospf_src;
++};
++
++extern struct proto_config* krt_init_config(int class);
++
++/**
++ * Requires: 'p', 'route_info' are non NULL, and the value of 'action' is
++ * either CLICK_ROUTE_ADD or CLICK_ROUTE_REMOVE.
++ *
++ * Writes the contents of 'route_info' to the appropriate Click handler
++ * (either the add_route or the remove_route handler) based on the value of
++ * 'action'.
++ */
++static void write_route_to_click(const struct proto *p,
++        const struct click_route_info *route_info,
++        int action);
++
++/**
++ * Requires: 'p', 'net', 'route' are non NULL, and the value of 'action' is
++ * either CLICK_ROUTE_ADD or CLICK_ROUTE_REMOVE.
++ *
++ * Tells Click to either add or remove a route, depending on the 'action'.
++ * The route information is derived from the information contained in 'net'
++ * and 'route'.
++ */
++static void push_route_info_to_click(const struct proto *p, const net *net,
++        const rte *route, int action);
++
++#endif
+diff --git a/sysdep/click/sysio.h b/sysdep/click/sysio.h
+new file mode 100644
+index 00000000..6919dce5
+--- /dev/null
++++ b/sysdep/click/sysio.h
+@@ -0,0 +1,280 @@
++/*
++ *	BIRD Internet Routing Daemon -- Linux Multicasting and Network Includes
++ *
++ *	(c) 1998--2000 Martin Mares <mj@ucw.cz>
++ *	(c) 2014--2017 Cisco Systems, Inc.
++ *
++ *	Can be freely distributed and used under the terms of the GNU GPL.
++ */
++
++#ifndef _BIRD_SYSIO_H_
++#define _BIRD_SYSIO_H_
++
++#include <netinet/tcp.h>
++#include <sockproxy.h>
++#include "lib/ip.h"
++
++#ifdef IPV6
++
++#ifndef IPV6_UNICAST_HOPS
++/* Needed on glibc 2.0 systems */
++#include <linux/in6.h>
++#define CONFIG_IPV6_GLIBC_20
++#endif
++
++static inline void
++set_inaddr(struct in6_addr *ia, ip_addr a)
++{
++  ipa_hton(a);
++  memcpy(ia, &a, sizeof(a));
++}
++
++static inline void
++get_inaddr(ip_addr *a, struct in6_addr *ia)
++{
++  memcpy(a, ia, sizeof(*a));
++  ipa_ntoh(*a);
++}
++
++#else
++
++static inline void
++set_inaddr(struct in_addr *ia, ip_addr a)
++{
++  ipa_hton(a);
++  memcpy(&ia->s_addr, &a, sizeof(a));
++}
++
++static inline void
++get_inaddr(ip_addr *a, struct in_addr *ia)
++{
++  memcpy(a, &ia->s_addr, sizeof(*a));
++  ipa_ntoh(*a);
++}
++
++#endif /* IPV6 */
++
++
++#ifndef IP_MINTTL
++#define IP_MINTTL 21
++#endif
++
++#ifndef IPV6_TCLASS
++#define IPV6_TCLASS 67
++#endif
++
++#ifndef IPV6_MINHOPCOUNT
++#define IPV6_MINHOPCOUNT 73
++#endif
++
++
++#ifndef TCP_MD5SIG
++
++#define TCP_MD5SIG  14
++#define TCP_MD5SIG_MAXKEYLEN 80
++
++struct tcp_md5sig {
++  struct  sockaddr_storage tcpm_addr;             /* address associated */
++  u16   __tcpm_pad1;                              /* zero */
++  u16   tcpm_keylen;                              /* key length */
++  u32   __tcpm_pad2;                              /* zero */
++  u8    tcpm_key[TCP_MD5SIG_MAXKEYLEN];           /* key (binary) */
++};
++
++#endif
++
++
++/* Linux does not care if sa_len is larger than needed */
++#define SA_LEN(x) sizeof(sockaddr)
++
++
++/*
++ *	Linux IPv4 multicast syscalls
++ */
++
++#define INIT_MREQ4(maddr,ifa) \
++  { .imr_multiaddr = ipa_to_in4(maddr), .imr_ifindex = ifa->index }
++
++static inline int
++sk_setup_multicast4(sock *s)
++{
++  struct ip_mreqn mr = { .imr_ifindex = s->iface->index };
++  int ttl = s->ttl;
++  int n = 0;
++
++  /* This defines where should we send _outgoing_ multicasts */
++  if (CSP_setsockopt(s->fd, SOL_IP, IP_MULTICAST_IF, &mr, sizeof(mr)) < 0)
++    ERR("IP_MULTICAST_IF");
++
++  if (CSP_setsockopt(s->fd, SOL_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl)) < 0)
++    ERR("IP_MULTICAST_TTL");
++
++  if (CSP_setsockopt(s->fd, SOL_IP, IP_MULTICAST_LOOP, &n, sizeof(n)) < 0)
++    ERR("IP_MULTICAST_LOOP");
++
++  return 0;
++}
++
++static inline int
++sk_join_group4(sock *s, ip_addr maddr)
++{
++  struct ip_mreqn mr = INIT_MREQ4(maddr, s->iface);
++
++  if (CSP_setsockopt(s->fd, SOL_IP, IP_ADD_MEMBERSHIP, &mr, sizeof(mr)) < 0)
++    ERR("IP_ADD_MEMBERSHIP");
++
++  return 0;
++}
++
++static inline int
++sk_leave_group4(sock *s, ip_addr maddr)
++{
++  struct ip_mreqn mr = INIT_MREQ4(maddr, s->iface);
++
++  if (CSP_setsockopt(s->fd, SOL_IP, IP_DROP_MEMBERSHIP, &mr, sizeof(mr)) < 0)
++    ERR("IP_DROP_MEMBERSHIP");
++
++  return 0;
++}
++
++
++/*
++ *	Linux IPv4 packet control messages
++ */
++
++/* Mostly similar to standardized IPv6 code */
++
++#define CMSG4_SPACE_PKTINFO CMSG_SPACE(sizeof(struct in_pktinfo))
++#define CMSG4_SPACE_TTL CMSG_SPACE(sizeof(int))
++
++static inline int
++sk_request_cmsg4_pktinfo(sock *s)
++{
++  int y = 1;
++
++  if (CSP_setsockopt(s->fd, SOL_IP, IP_PKTINFO, &y, sizeof(y)) < 0)
++    ERR("IP_PKTINFO");
++
++  return 0;
++}
++
++static inline int
++sk_request_cmsg4_ttl(sock *s)
++{
++  int y = 1;
++
++  if (CSP_setsockopt(s->fd, SOL_IP, IP_RECVTTL, &y, sizeof(y)) < 0)
++    ERR("IP_RECVTTL");
++
++  return 0;
++}
++
++static inline void
++sk_process_cmsg4_pktinfo(sock *s, struct cmsghdr *cm)
++{
++  if (cm->cmsg_type == IP_PKTINFO)
++  {
++    struct in_pktinfo *pi = (struct in_pktinfo *) CMSG_DATA(cm);
++    s->laddr = ipa_from_in4(pi->ipi_addr);
++    s->lifindex = pi->ipi_ifindex;
++  }
++}
++
++static inline void
++sk_process_cmsg4_ttl(sock *s, struct cmsghdr *cm)
++{
++  if (cm->cmsg_type == IP_TTL)
++    s->rcv_ttl = * (int *) CMSG_DATA(cm);
++}
++
++static inline void
++sk_prepare_cmsgs4(sock *s, struct msghdr *msg, void *cbuf, size_t cbuflen)
++{
++  struct cmsghdr *cm;
++  struct in_pktinfo *pi;
++  int controllen = 0;
++
++  msg->msg_control = cbuf;
++  msg->msg_controllen = cbuflen;
++
++  cm = CMSG_FIRSTHDR(msg);
++  cm->cmsg_level = SOL_IP;
++  cm->cmsg_type = IP_PKTINFO;
++  cm->cmsg_len = CMSG_LEN(sizeof(*pi));
++  controllen += CMSG_SPACE(sizeof(*pi));
++
++  pi = (struct in_pktinfo *) CMSG_DATA(cm);
++  pi->ipi_ifindex = s->iface ? s->iface->index : 0;
++  pi->ipi_spec_dst = ipa_to_in4(s->saddr);
++  pi->ipi_addr = ipa_to_in4(IPA_NONE);
++
++  msg->msg_controllen = controllen;
++}
++
++
++/*
++ *	Miscellaneous Linux socket syscalls
++ */
++
++static inline int
++sk_set_min_ttl4(sock *s, int ttl)
++{
++  if (CSP_setsockopt(s->fd, SOL_IP, IP_MINTTL, &ttl, sizeof(ttl)) < 0)
++  {
++    if (errno == ENOPROTOOPT)
++      ERR_MSG("Kernel does not support IPv4 TTL security");
++    else
++      ERR("IP_MINTTL");
++  }
++
++  return 0;
++}
++
++static inline int
++sk_set_min_ttl6(sock *s, int ttl)
++{
++  if (CSP_setsockopt(s->fd, SOL_IPV6, IPV6_MINHOPCOUNT, &ttl, sizeof(ttl)) < 0)
++  {
++    if (errno == ENOPROTOOPT)
++      ERR_MSG("Kernel does not support IPv6 TTL security");
++    else
++      ERR("IPV6_MINHOPCOUNT");
++  }
++
++  return 0;
++}
++
++static inline int
++sk_disable_mtu_disc4(sock *s)
++{
++  int dont = IP_PMTUDISC_DONT;
++
++  if (CSP_setsockopt(s->fd, SOL_IP, IP_MTU_DISCOVER, &dont, sizeof(dont)) < 0)
++    ERR("IP_MTU_DISCOVER");
++
++  return 0;
++}
++
++static inline int
++sk_disable_mtu_disc6(sock *s)
++{
++  int dont = IPV6_PMTUDISC_DONT;
++
++  if (CSP_setsockopt(s->fd, SOL_IPV6, IPV6_MTU_DISCOVER, &dont, sizeof(dont)) < 0)
++    ERR("IPV6_MTU_DISCOVER");
++
++  return 0;
++}
++
++extern int sk_priority_control;
++
++static inline int
++sk_set_priority(sock *s, int prio)
++{
++  if (CSP_setsockopt(s->fd, SOL_SOCKET, SO_PRIORITY, &prio, sizeof(prio)) < 0)
++    ERR("SO_PRIORITY");
++
++  return 0;
++}
++
++#endif /* _BIRD_SYSIO_H_ */
+diff --git a/sysdep/click/syspriv.h b/sysdep/click/syspriv.h
+new file mode 100644
+index 00000000..d2ba95dd
+--- /dev/null
++++ b/sysdep/click/syspriv.h
+@@ -0,0 +1,72 @@
++
++#include <sys/prctl.h>
++#include <linux/capability.h>
++
++#ifndef _LINUX_CAPABILITY_VERSION_3
++#define _LINUX_CAPABILITY_VERSION_3  0x20080522
++#define _LINUX_CAPABILITY_U32S_3     2
++#endif
++
++/* CAP_TO_MASK is missing in CentOS header files */
++#ifndef CAP_TO_MASK
++#define CAP_TO_MASK(x)      (1 << ((x) & 31))
++#endif
++
++/* capset() prototype is missing ... */
++int capset(cap_user_header_t hdrp, const cap_user_data_t datap);
++
++static inline int
++set_capabilities(u32 caps)
++{
++  struct __user_cap_header_struct cap_hdr;
++  struct __user_cap_data_struct cap_dat[_LINUX_CAPABILITY_U32S_3];
++  int err;
++
++  cap_hdr.version = _LINUX_CAPABILITY_VERSION_3;
++  cap_hdr.pid = 0;
++
++  memset(cap_dat, 0, sizeof(cap_dat));
++  cap_dat[0].effective = cap_dat[0].permitted = caps;
++
++  err = capset(&cap_hdr, cap_dat);
++  if (!err)
++    return 0;
++
++  /* Kernel may support do not support our version of capability interface.
++       The last call returned supported version so we just retry it. */
++  if (errno == EINVAL)
++  {
++    err = capset(&cap_hdr, cap_dat);
++    if (!err)
++      return 0;
++  }
++
++  return -1;
++}
++
++static void
++drop_uid(uid_t uid)
++{
++  u32 caps =
++    CAP_TO_MASK(CAP_NET_BIND_SERVICE) |
++    CAP_TO_MASK(CAP_NET_BROADCAST) |
++    CAP_TO_MASK(CAP_NET_ADMIN) |
++    CAP_TO_MASK(CAP_NET_RAW);
++
++  /* change effective user ID to be able to switch to that
++     user ID completely after dropping CAP_SETUID */
++  if (seteuid(uid) < 0)
++    die("seteuid: %m");
++
++  /* restrict the capabilities */
++  if (set_capabilities(caps) < 0)
++    die("capset: %m");
++
++  /* keep the capabilities after dropping root ID */
++  if (prctl(PR_SET_KEEPCAPS, 1) < 0)
++    die("prctl: %m");
++
++  /* completely switch to the unprivileged user ID */
++  if (setresuid(uid, uid, uid) < 0)
++    die("setresuid: %m");
++}
+-- 
+2.22.0
+

@@ -1,0 +1,25 @@
+From 130fb9aa4bbffd23df789d0f35a0047098ff02e1 Mon Sep 17 00:00:00 2001
+From: David Silverman <dasilver@meraki.com>
+Date: Mon, 22 Feb 2021 09:56:22 -0800
+Subject: [PATCH 1/2] Remove hardcode library path to cross-compile
+
+---
+ configure.ac | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/configure.ac b/configure.ac
+index 7c58870..8780ed9 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -761,7 +761,7 @@ AC_SUBST(LASSO_CORE_CFLAGS)
+ AC_SUBST(LASSO_CORE_LIBS)
+ 
+ LASSO_CFLAGS="$LASSO_CFLAGS"
+-LASSO_LIBS="-L${libdir} $Z_LIBS $LASSO_LIBS"
++LASSO_LIBS="$Z_LIBS $LASSO_LIBS"
+ AC_SUBST(LASSO_CFLAGS)
+ AC_SUBST(LASSO_LIBS)
+ 
+-- 
+2.29.0
+
